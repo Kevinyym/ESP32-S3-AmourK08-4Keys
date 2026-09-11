@@ -1,11 +1,17 @@
 #include "lgfx.h"
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_NeoPixel.h>
+#include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <Audio.h>
-#include <HTTPClient.h>
 #include <OneButton.h>
-#include <map>
+#include <Preferences.h>
+#include <WiFi.h>
+#include <vector>
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
 
 #define PIN_LED 48
 #define PIN_RED_LED 47
@@ -25,7 +31,17 @@
 using namespace std;
 
 #define FONT16 &fonts::efontCN_16
-#define FM_URL "http://lhttp.qtfm.cn/live/%d/64k.mp3"
+#define FM_URL "http://lhttp.qtfm.cn/live/%lu/64k.mp3"
+
+constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 10000;
+constexpr uint32_t SMART_CONFIG_TIMEOUT_MS = 120000;
+constexpr uint32_t NTP_SYNC_TIMEOUT_MS = 15000;
+constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 5000;
+constexpr uint32_t RADIO_RETRY_INTERVAL_MS = 2000;
+constexpr uint32_t RADIO_STABLE_WINDOW_MS = 30000;
+constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 2000;
+constexpr uint32_t AHT_RETRY_INTERVAL_MS = 60000;
+constexpr uint8_t MAX_RADIO_RETRIES = 3;
 
 typedef struct {
   u32_t id;
@@ -33,16 +49,38 @@ typedef struct {
 } RadioItem;
 
 static const char *WEEK_DAYS[] = {"日", "一", "二", "三", "四", "五", "六"};
-long check1s = 0, check10ms = 0, check300ms = 0, check60s = 0;
+uint32_t check1s = 0, check10ms = 0, check60s = 0;
 char buf[128] = {0};
 LGFX tft;
-LGFX_Sprite sp(&tft);
+LGFX_Sprite dateSprite(&tft);
+LGFX_Sprite timeSprite(&tft);
+LGFX_Sprite radioSprite(&tft);
+LGFX_Sprite sensorSprite(&tft);
+LGFX_Sprite volumeSprite(&tft);
+LGFX_Sprite ipSprite(&tft);
 Audio audio;
+Preferences preferences;
 int curIndex = 0;
 int curVolume = 6;
+bool ahtAvailable = false;
+bool wireReady = false;
+bool otaReady = false;
+bool wifiWasConnected = false;
+bool redLedState = false;
+bool settingsDirty = false;
+volatile bool radioRetryPending = false;
+volatile uint8_t radioRetryCount = 0;
+uint32_t lastWifiRetry = 0;
+uint32_t lastRadioAttempt = 0;
+uint32_t radioConnectedAt = 0;
+uint32_t settingsChangedAt = 0;
+uint32_t lastAhtAttempt = 0;
 Adafruit_NeoPixel pixels(4, PIN_LED, NEO_GRB + NEO_KHZ800);
 Adafruit_AHTX0 aht;
-std::map<u32_t, OneButton *> buttons;
+OneButton addButton(PIN_KEY_ADD);
+OneButton minusButton(PIN_KEY_MINUS);
+OneButton modeButton(PIN_KEY_MODE);
+OneButton *buttons[] = {&addButton, &minusButton, &modeButton};
 std::vector<RadioItem> radios = {
     {4915, "清晨音乐台"},
     {1223, "怀旧好声音"},
@@ -159,7 +197,13 @@ std::vector<RadioItem> radios = {
     {20500187, "云梦音乐台"},
 };
 
+void setAmplifierEnabled(bool enabled) {
+  digitalWrite(PIN_I2S_SD, enabled ? HIGH : LOW);
+}
+
 void inline initAudioDevice() {
+  pinMode(PIN_I2S_SD, OUTPUT);
+  setAmplifierEnabled(false);
   audio.setPinout(PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DOUT);
   audio.setVolume(curVolume);
 }
@@ -173,53 +217,86 @@ void inline initPixels() {
   pixels.show();
 }
 
-void inline autoConfigWifi() {
+bool waitForWifi(uint32_t timeoutMs) {
+  const uint32_t startedAt = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < timeoutMs) {
+    delay(100);
+  }
+  return WiFi.status() == WL_CONNECTED;
+}
+
+bool inline autoConfigWifi() {
   tft.println("Start WiFi Connect!");
   WiFi.mode(WIFI_MODE_STA);
   WiFi.begin();
-  for (int i = 0; WiFi.status() != WL_CONNECTED && i < 100; i++) {
-    delay(100);
-  }
-  if (WiFi.status() != WL_CONNECTED) {
+
+  if (!waitForWifi(WIFI_CONNECT_TIMEOUT_MS)) {
     WiFi.mode(WIFI_MODE_APSTA);
     WiFi.beginSmartConfig();
     tft.println("Use ESPTouch App!");
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(100);
+
+    if (!waitForWifi(SMART_CONFIG_TIMEOUT_MS)) {
+      WiFi.stopSmartConfig();
+      WiFi.mode(WIFI_MODE_STA);
+      tft.println("WiFi config timeout");
+      return false;
     }
+
     WiFi.stopSmartConfig();
     WiFi.mode(WIFI_MODE_STA);
   }
+
+  WiFi.setAutoReconnect(true);
   tft.println("WiFi Connected, Please Wait...");
+  return true;
 }
 
 inline void showCurrentTime() {
-  struct tm info;
-  getLocalTime(&info);
-  sprintf(buf, "%d年%d月%d日 星期%s", 1900 + info.tm_year, info.tm_mon + 1,
-          info.tm_mday, WEEK_DAYS[info.tm_wday]);
-  sp.createSprite(240, 16);
-  sp.drawCentreString(buf, 120, 0);
-  sp.pushSprite(0, 110);
-  sp.deleteSprite();
+  struct tm info{};
+  if (!getLocalTime(&info, 10)) {
+    timeSprite.fillSprite(TFT_BLACK);
+    timeSprite.drawCentreString("--:--:--", 120, 0, &fonts::FreeSans24pt7b);
+    timeSprite.pushSprite(0, 140);
+    return;
+  }
+
+  snprintf(buf, sizeof(buf), "%d年%d月%d日 星期%s", 1900 + info.tm_year,
+           info.tm_mon + 1, info.tm_mday, WEEK_DAYS[info.tm_wday]);
+  dateSprite.fillSprite(TFT_BLACK);
+  dateSprite.drawCentreString(buf, 120, 0);
+  dateSprite.pushSprite(0, 110);
   strftime(buf, 36, "%T", &info);
-  sp.createSprite(240, 36);
-  sp.drawCentreString(buf, 120, 0, &fonts::FreeSans24pt7b);
-  sp.pushSprite(0, 140);
-  sp.deleteSprite();
+  timeSprite.fillSprite(TFT_BLACK);
+  timeSprite.drawCentreString(buf, 120, 0, &fonts::FreeSans24pt7b);
+  timeSprite.pushSprite(0, 140);
 }
 
-void inline startConfigTime() {
+bool inline startConfigTime() {
   const int timeZone = 8 * 3600;
   configTime(timeZone, 0, "ntp6.aliyun.com", "cn.ntp.org.cn", "ntp.ntsc.ac.cn");
-  while (time(nullptr) < 8 * 3600 * 2) {
+
+  const uint32_t startedAt = millis();
+  while (time(nullptr) < 8 * 3600 * 2 &&
+         millis() - startedAt < NTP_SYNC_TIMEOUT_MS) {
     delay(300);
   }
+  return time(nullptr) >= 8 * 3600 * 2;
 }
 
-void inline setupOTAConfig() {
+bool inline setupOTAConfig() {
+#if !defined(K08_OTA_PASSWORD) && !defined(K08_OTA_PASSWORD_HASH)
+  Serial.println("OTA disabled: create include/secrets.h and configure a password");
+  return false;
+#else
+  ArduinoOTA.setHostname("k08-netradio");
+#if defined(K08_OTA_PASSWORD_HASH)
+  ArduinoOTA.setPasswordHash(K08_OTA_PASSWORD_HASH);
+#else
+  ArduinoOTA.setPassword(K08_OTA_PASSWORD);
+#endif
   ArduinoOTA.onStart([] {
     audio.stopSong();
+    setAmplifierEnabled(false);
     tft.setBrightness(200);
     tft.clear();
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -228,11 +305,12 @@ void inline setupOTAConfig() {
     tft.drawCentreString("正在升级中，请勿断电...", 120, 190, FONT16);
   });
   ArduinoOTA.onProgress([](u32_t pro, u32_t total) {
-    sprintf(buf, "升级进度: %d / %d", pro, total);
+    snprintf(buf, sizeof(buf), "升级进度: %lu / %lu",
+             static_cast<unsigned long>(pro), static_cast<unsigned long>(total));
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawCentreString(buf, 120, 120, FONT16);
     if (pro > 0 && total > 0) {
-      int pros = pro * 200 / total;
+      int pros = static_cast<int>(static_cast<uint64_t>(pro) * 200 / total);
       tft.fillRoundRect(20, 160, pros, 6, 2, TFT_WHITE);
     }
   });
@@ -244,15 +322,16 @@ void inline setupOTAConfig() {
   });
   ArduinoOTA.onError([](ota_error_t e) {
     tft.clear();
-    ESP.restart();
+    snprintf(buf, sizeof(buf), "升级失败: %u", static_cast<unsigned>(e));
+    tft.drawCentreString(buf, 120, 100, FONT16);
+    Serial.println(buf);
   });
   ArduinoOTA.begin();
-  sprintf(buf, "%s", WiFi.localIP().toString().c_str());
+  otaReady = true;
+  snprintf(buf, sizeof(buf), "%s", WiFi.localIP().toString().c_str());
   tft.println(buf);
-  struct tm info;
-  getLocalTime(&info);
-  strftime(buf, 64, "%c", &info);
-  tft.println(buf);
+  return true;
+#endif
 }
 
 void nextVolume(int offset) {
@@ -260,15 +339,48 @@ void nextVolume(int offset) {
   if (vol >= 0 && vol <= 21) {
     curVolume = vol;
     audio.setVolume(curVolume);
-    sprintf(buf, "音量: %d", curVolume);
-    sp.createSprite(120, 16);
-    sp.drawString(buf, 8, 0);
-    sp.pushSprite(0, 220);
-    sp.deleteSprite();
+    snprintf(buf, sizeof(buf), "音量: %d", curVolume);
+    volumeSprite.fillSprite(TFT_BLACK);
+    volumeSprite.drawString(buf, 8, 0);
+    volumeSprite.pushSprite(0, 220);
+    if (offset != 0) {
+      settingsDirty = true;
+      settingsChangedAt = millis();
+    }
   }
 }
 
-void playNext(int offset) {
+bool connectCurrentRadio() {
+  if (WiFi.status() != WL_CONNECTED || radios.empty()) {
+    return false;
+  }
+
+  audio.stopSong();
+  setAmplifierEnabled(false);
+  const auto &radio = radios[curIndex];
+  snprintf(buf, sizeof(buf), FM_URL, static_cast<unsigned long>(radio.id));
+  const bool connected = audio.connecttohost(buf);
+  if (connected) {
+    radioConnectedAt = millis();
+    setAmplifierEnabled(true);
+  }
+  return connected;
+}
+
+void showCurrentRadio() {
+  const auto &radio = radios[curIndex];
+  snprintf(buf, sizeof(buf), "%d.%s", curIndex + 1, radio.name.c_str());
+  radioSprite.fillSprite(TFT_BLACK);
+  radioSprite.drawCentreString(buf, 120, 0);
+  radioSprite.pushSprite(0, 20);
+}
+
+void scheduleRadioRetry() {
+  radioRetryPending = true;
+  lastRadioAttempt = millis();
+}
+
+void playNext(int offset, bool saveSelection = false) {
   int total = radios.size();
   curIndex += offset;
   if (curIndex >= total) {
@@ -276,36 +388,37 @@ void playNext(int offset) {
   } else if (curIndex < 0) {
     curIndex += total;
   }
-  auto radio = radios[curIndex];
-  sprintf(buf, FM_URL, radio.id);
-  audio.connecttohost(buf);
-  sprintf(buf, "%d.%s", curIndex + 1, radio.name.c_str());
-  sp.createSprite(240, 16);
-  sp.drawCentreString(buf, 120, 0);
-  sp.pushSprite(0, 20);
-  sp.deleteSprite();
+  radioRetryCount = 0;
+  showCurrentRadio();
+  if (saveSelection) {
+    settingsDirty = true;
+    settingsChangedAt = millis();
+  }
+  if (!connectCurrentRadio()) {
+    radioRetryCount = 1;
+    scheduleRadioRetry();
+  }
 }
 
 inline void showClientIP() {
   tft.clear();
-  sprintf(buf, "%s", WiFi.localIP().toString().c_str());
-  sp.createSprite(120, 16);
-  sp.drawRightString(buf, 112, 0);
-  sp.pushSprite(120, 220);
-  sp.deleteSprite();
+  snprintf(buf, sizeof(buf), "%s", WiFi.localIP().toString().c_str());
+  ipSprite.fillSprite(TFT_BLACK);
+  ipSprite.drawRightString(buf, 112, 0);
+  ipSprite.pushSprite(120, 220);
 }
 
 void onButtonClick(void *p) {
-  u32_t pin = (u32_t)p;
+  const u32_t pin = static_cast<u32_t>(reinterpret_cast<uintptr_t>(p));
   switch (pin) {
   case PIN_KEY_MODE:
     audio.pauseResume();
     break;
   case PIN_KEY_ADD:
-    playNext(1);
+    playNext(1, true);
     break;
   case PIN_KEY_MINUS:
-    playNext(-1);
+    playNext(-1, true);
     break;
   default:
     break;
@@ -313,7 +426,7 @@ void onButtonClick(void *p) {
 }
 
 void onButtonDoubleClick(void *p) {
-  u32_t pin = (u32_t)p;
+  const u32_t pin = static_cast<u32_t>(reinterpret_cast<uintptr_t>(p));
   switch (pin) {
   case PIN_KEY_ADD:
     nextVolume(1);
@@ -327,13 +440,21 @@ void onButtonDoubleClick(void *p) {
 }
 
 void inline setupButtons() {
-  u32_t btnPins[] = {PIN_KEY_ADD, PIN_KEY_MINUS, PIN_KEY_MODE};
-  for (auto pin : btnPins) {
-    auto *btn = new OneButton(pin);
-    btn->attachClick(onButtonClick, (void *)pin);
-    btn->attachDoubleClick(onButtonDoubleClick, (void *)pin);
-    buttons.insert({pin, btn});
-  }
+  addButton.attachClick(onButtonClick, reinterpret_cast<void *>(PIN_KEY_ADD));
+  addButton.attachDoubleClick(onButtonDoubleClick,
+                              reinterpret_cast<void *>(PIN_KEY_ADD));
+  minusButton.attachClick(onButtonClick, reinterpret_cast<void *>(PIN_KEY_MINUS));
+  minusButton.attachDoubleClick(onButtonDoubleClick,
+                                reinterpret_cast<void *>(PIN_KEY_MINUS));
+  modeButton.attachClick(onButtonClick, reinterpret_cast<void *>(PIN_KEY_MODE));
+}
+
+void setupSprite(LGFX_Sprite &sprite, int width, int height) {
+  sprite.setFont(FONT16);
+  sprite.setColorDepth(8);
+  sprite.setTextColor(TFT_WHITE, TFT_BLACK);
+  sprite.createSprite(width, height);
+  sprite.fillSprite(TFT_BLACK);
 }
 
 void inline initTFTDevice() {
@@ -342,73 +463,200 @@ void inline initTFTDevice() {
   tft.setFont(FONT16);
   tft.setColorDepth(8);
   tft.fillScreen(TFT_BLACK);
-  sp.setFont(FONT16);
-  sp.setColorDepth(8);
+  setupSprite(dateSprite, 240, 16);
+  setupSprite(timeSprite, 240, 36);
+  setupSprite(radioSprite, 240, 16);
+  setupSprite(sensorSprite, 240, 16);
+  setupSprite(volumeSprite, 120, 16);
+  setupSprite(ipSprite, 120, 16);
 }
 
 void inline initAHT20Wire() {
-  Wire.setPins(PIN_I2C_SDA, PIN_I2C_SCL);
-  if (!aht.begin()) {
-    Serial.println("Could not find AHT20?");
+  lastAhtAttempt = millis();
+  if (!wireReady) {
+    wireReady = Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
+  }
+  if (!wireReady) {
+    ahtAvailable = false;
+    Serial.println("I2C initialization failed");
+    return;
+  }
+
+  ahtAvailable = aht.begin(&Wire);
+  if (!ahtAvailable) {
+    Serial.println("AHT20 not found at I2C address 0x38");
+  } else {
+    Serial.println("AHT20 initialized");
   }
 }
 
 void inline updateAHT20Data() {
+  if (!ahtAvailable) {
+    sensorSprite.fillSprite(TFT_BLACK);
+    sensorSprite.drawCentreString("AHT20 offline", 120, 0);
+    sensorSprite.pushSprite(0, 60);
+    if (millis() - lastAhtAttempt >= AHT_RETRY_INTERVAL_MS) {
+      initAHT20Wire();
+    }
+    return;
+  }
+
   sensors_event_t humidity, temp;
-  aht.getEvent(&humidity, &temp);
-  sprintf(buf, "气温: %.2f℃ 湿度: %.2f%%\n", temp.temperature,
-          humidity.relative_humidity);
-  sp.createSprite(240, 16);
-  sp.drawCentreString(buf, 120, 0);
-  sp.pushSprite(0, 60);
-  sp.deleteSprite();
+  if (!aht.getEvent(&humidity, &temp)) {
+    ahtAvailable = false;
+    Serial.println("AHT20 read failed; retry scheduled");
+    return;
+  }
+  snprintf(buf, sizeof(buf), "气温: %.2f℃ 湿度: %.2f%%", temp.temperature,
+           humidity.relative_humidity);
+  sensorSprite.fillSprite(TFT_BLACK);
+  sensorSprite.drawCentreString(buf, 120, 0);
+  sensorSprite.pushSprite(0, 60);
+}
+
+void loadUserSettings() {
+  preferences.begin("netradio", false);
+  curVolume = constrain(preferences.getInt("volume", 6), 0, 21);
+  curIndex = preferences.getUInt("station", 0);
+  if (curIndex < 0 || curIndex >= static_cast<int>(radios.size())) {
+    curIndex = 0;
+  }
+}
+
+void handleSettingsPersistence() {
+  if (!settingsDirty || millis() - settingsChangedAt < SETTINGS_SAVE_DELAY_MS) {
+    return;
+  }
+
+  preferences.putUChar("volume", static_cast<uint8_t>(curVolume));
+  preferences.putUShort("station", static_cast<uint16_t>(curIndex));
+  settingsDirty = false;
 }
 
 void setup() {
   Serial.begin(115200);
+  delay(500);
   Serial.println("Hello ESP-S3!!");
+  constexpr uint32_t bytesPerMiB = 1024U * 1024U;
+  const uint32_t flashBytes = ESP.getFlashChipSize();
+  const uint32_t psramBytes = ESP.getPsramSize();
+  Serial.printf("Flash: %u MB, PSRAM: %u MB (%u usable bytes)\n",
+                static_cast<unsigned>((flashBytes + bytesPerMiB / 2) / bytesPerMiB),
+                static_cast<unsigned>((psramBytes + bytesPerMiB / 2) / bytesPerMiB),
+                static_cast<unsigned>(psramBytes));
+  loadUserSettings();
   initTFTDevice();
   initAHT20Wire();
   setupButtons();
   initPixels();
   initAudioDevice();
-  autoConfigWifi();
-  startConfigTime();
-  setupOTAConfig();
-  showClientIP();
+  wifiWasConnected = autoConfigWifi();
+  if (wifiWasConnected) {
+    startConfigTime();
+    setupOTAConfig();
+    showClientIP();
+  }
   showCurrentTime();
   updateAHT20Data();
   nextVolume(0);
-  playNext(0);
+  if (wifiWasConnected) {
+    playNext(0);
+  }
+}
+
+void handleConnectivity() {
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  const uint32_t now = millis();
+
+  if (!connected) {
+    if (wifiWasConnected) {
+      wifiWasConnected = false;
+      audio.stopSong();
+      setAmplifierEnabled(false);
+      radioRetryPending = false;
+      if (otaReady) {
+        ArduinoOTA.end();
+        otaReady = false;
+      }
+      Serial.println("WiFi disconnected");
+    }
+
+    if (now - lastWifiRetry >= WIFI_RETRY_INTERVAL_MS) {
+      lastWifiRetry = now;
+      WiFi.reconnect();
+    }
+    return;
+  }
+
+  if (!wifiWasConnected) {
+    wifiWasConnected = true;
+    Serial.println("WiFi reconnected");
+    startConfigTime();
+    setupOTAConfig();
+    showClientIP();
+    playNext(0);
+  }
+}
+
+void handleRadioRetry() {
+  if (!radioRetryPending || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (now - lastRadioAttempt < RADIO_RETRY_INTERVAL_MS) {
+    return;
+  }
+
+  lastRadioAttempt = now;
+  if (radioRetryCount >= MAX_RADIO_RETRIES) {
+    radioRetryPending = false;
+    playNext(1);
+    return;
+  }
+
+  ++radioRetryCount;
+  radioRetryPending = !connectCurrentRadio();
 }
 
 void loop() {
   audio.loop();
-  auto ms = millis();
-  if (ms - check60s > 60000) {
+  handleConnectivity();
+  handleRadioRetry();
+  handleSettingsPersistence();
+  if (otaReady) {
+    ArduinoOTA.handle();
+  }
+
+  const uint32_t ms = millis();
+  if (ms - check60s >= 60000U) {
     check60s = ms;
     updateAHT20Data();
   }
-  if (ms - check1s > 1000) {
+  if (ms - check1s >= 1000U) {
     check1s = ms;
-    ArduinoOTA.handle();
-    digitalWrite(PIN_RED_LED, check1s % 2 ? LOW : HIGH);
-  }
-  if (ms - check300ms > 300) {
-    check300ms = ms;
+    redLedState = !redLedState;
+    digitalWrite(PIN_RED_LED, redLedState ? HIGH : LOW);
     showCurrentTime();
-    uint16_t rc = rand() % 65536;
-    pixels.fill(rc);
+    pixels.fill(pixels.Color(random(0, 256), random(0, 256), random(0, 256)));
     pixels.show();
   }
-  if (ms - check10ms >= 10) {
+  if (ms - check10ms >= 10U) {
     check10ms = ms;
-    for (auto it : buttons) {
-      it.second->tick();
+    for (auto *button : buttons) {
+      button->tick();
     }
   }
 }
 
 void audio_info(const char *info) { Serial.println(info); }
 
-void audio_eof_stream(const char *info) { playNext(1); }
+void audio_eof_stream(const char *info) {
+  Serial.printf("Stream ended: %s\n", info ? info : "");
+  setAmplifierEnabled(false);
+  if (millis() - radioConnectedAt >= RADIO_STABLE_WINDOW_MS) {
+    radioRetryCount = 0;
+  }
+  ++radioRetryCount;
+  scheduleRadioRetry();
+}
