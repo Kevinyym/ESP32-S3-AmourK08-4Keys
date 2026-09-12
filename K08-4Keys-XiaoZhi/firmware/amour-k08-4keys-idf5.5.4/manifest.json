@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "board": "amour-k08-4keys",
+  "variant": "amour-k08-4keys",
+  "reported_type": "amour-k08-4keys",
+  "target": "esp32s3",
+  "module": "ESP32-S3-WROOM-1-N16R8",
+  "project_version": "2.4.2",
+  "source_commit": "c7241272f2d5fd140c77542f3cf12d09e717fc2f",
+  "source_note": "The copied baseline retains the pre-existing bread-compact-wifi SSD1306 config initialization change.",
+  "build_date": "2026-09-12",
+  "esp_idf_version": "5.5.4",
+  "preferred_esp_idf_version": "6.0.2",
+  "canonical_command": "python3 scripts/build.py amour-k08-4keys --name amour-k08-4keys",
+  "build_exit_code": 0,
+  "configuration": {
+    "flash_size": "16MB",
+    "flash_mode": "dio",
+    "flash_frequency": "80m",
+    "psram_mode": "octal",
+    "language": "zh-CN",
+    "wake_word_engine": "AFE"
+  },
+  "images": [
+    {
+      "file": "amour-k08-4keys-v2.4.2-idf5.5.4-full.bin",
+      "offset": "0x0",
+      "size": 9651265,
+      "sha256": "e0a641e28c0495303d94e6910da165e44014219215a3a5b95ffb533f89a86f60"
+    },
+    {
+      "file": "bootloader.bin",
+      "offset": "0x0",
+      "size": 16256,
+      "sha256": "e1809450c42f2ea5ebf8f35c75101b3dc63831a0e0cd59a5990e88b95de4c264"
+    },
+    {
+      "file": "partition-table.bin",
+      "offset": "0x8000",
+      "size": 3072,
+      "sha256": "4811619cacae08ef2e0e71b7220c6033a346ca5da7ca179082408c963ef530b5"
+    },
+    {
+      "file": "ota_data_initial.bin",
+      "offset": "0xd000",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "file": "xiaozhi.bin",
+      "offset": "0x20000",
+      "size": 2819392,
+      "sha256": "eca95139b65fc2394582d770fce5ef3cd2f2c9cc390b03231a1c05a09cf571ef"
+    },
+    {
+      "file": "generated_assets.bin",
+      "offset": "0x800000",
+      "size": 1262657,
+      "sha256": "99071eed782622f6dd0bbb2e52922b2491eee8bed526a88ed628ac71da502c22"
+    }
+  ],
+  "validation": {
+    "host_unit_tests": {
+      "passed": 67,
+      "failed": 0
+    },
+    "esp_idf_6_0_2_build": false,
+    "hardware_tested": false
+  }
+}

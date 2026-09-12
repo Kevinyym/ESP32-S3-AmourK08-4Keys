@@ -1,0 +1,10 @@
+{
+    "type": "amour-k08-4keys",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "amour-k08-4keys",
+            "sdkconfig_append": []
+        }
+    ]
+}
