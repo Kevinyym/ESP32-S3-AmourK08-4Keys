@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "board": "amour-k08-4keys",
+  "variant": "amour-k08-4keys",
+  "target": "esp32s3",
+  "project_version": "2.4.2",
+  "build_date": "2026-09-12",
+  "esp_idf_version": "5.5.4",
+  "preferred_esp_idf_version": "6.0.2",
+  "canonical_command": "python3 scripts/build.py amour-k08-4keys --name amour-k08-4keys",
+  "build_exit_code": 0,
+  "configuration": {
+    "flash_mode": "dio",
+    "flash_size": "16MB",
+    "flash_freq": "80m",
+    "display_style": "wechat",
+    "top_bar_height": 24,
+    "chat_area_height": 216,
+    "psram_mode": "octal"
+  },
+  "images": [
+    {
+      "file": "amour-k08-4keys-v2.4.2-text-ui-idf5.5.4-full.bin",
+      "offset": "0x0",
+      "size": 9651265,
+      "sha256": "fc743df77b3321c901f878c06ecbe4aa0b4b3068d42e12814b885de8a1fd1414"
+    },
+    {
+      "file": "bootloader.bin",
+      "offset": "0x0",
+      "size": 16256,
+      "sha256": "e1809450c42f2ea5ebf8f35c75101b3dc63831a0e0cd59a5990e88b95de4c264"
+    },
+    {
+      "file": "xiaozhi.bin",
+      "offset": "0x20000",
+      "size": 2823104,
+      "sha256": "fc9d5eb9b7e31e1c47b5aff7b8d2d2c900fc9fe034797e08b608040c8aa7455b"
+    },
+    {
+      "file": "partition-table.bin",
+      "offset": "0x8000",
+      "size": 3072,
+      "sha256": "4811619cacae08ef2e0e71b7220c6033a346ca5da7ca179082408c963ef530b5"
+    },
+    {
+      "file": "ota_data_initial.bin",
+      "offset": "0xd000",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "file": "generated_assets.bin",
+      "offset": "0x800000",
+      "size": 1262657,
+      "sha256": "99071eed782622f6dd0bbb2e52922b2491eee8bed526a88ed628ac71da502c22"
+    }
+  ],
+  "board_source_sha256": {
+    "amour_k08_4keys.cc": "949397774512e232d40bad40efc54695afb435248c257efe20d4348fd45a4646",
+    "amour_k08_text_display.cc": "f0643fae319d5b0752fa18f9cd52abe35ea93531c880d8ba96404f04fb67c581",
+    "amour_k08_text_display.h": "a652040cd3bc2551632f48d61a070e4270d047d681341c007f87448ac849b5d9",
+    "config.h": "5e01cb10f338d0e96b1811851035a88abbadc73884c8d86853967a053a552e3c",
+    "config.json": "16c246eb5747d9aadd13cd7453b8aa929cfb17fa62c8282b129db362737afc13"
+  },
+  "validation": {
+    "host_unit_tests_passed": 67,
+    "format_check_passed": true,
+    "esp_idf_6_0_2_build": false,
+    "hardware_tested": false
+  }
+}

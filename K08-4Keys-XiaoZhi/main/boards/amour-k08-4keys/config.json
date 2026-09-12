@@ -4,6 +4,9 @@
     "builds": [
         {
             "name": "amour-k08-4keys",
+            "build_options": {
+                "display_style": "wechat"
+            },
             "sdkconfig_append": []
         }
     ]

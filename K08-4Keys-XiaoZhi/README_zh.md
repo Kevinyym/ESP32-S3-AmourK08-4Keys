@@ -13,13 +13,19 @@ python3 scripts/build.py amour-k08-4keys --name amour-k08-4keys
 
 2026-09-12 已使用 ESP-IDF 5.5.4 完成兼容性构建，canonical 命令返回成功；应用镜像为 2,819,392 字节，应用分区剩余 32%。可烧录镜像、SHA-256 校验值和构建日志见 [`firmware/amour-k08-4keys-idf5.5.4`](firmware/amour-k08-4keys-idf5.5.4/README.md)。首选的 ESP-IDF 6.0.2 构建仍待验证。
 
+新增的[文字优先界面固件](firmware/amour-k08-4keys-text-ui-idf5.5.4/README.md)采用 24 px 状态栏和 216 px 对话区，多行换行、自动滚动，并在有文字时隐藏表情。已通过 ESP-IDF 5.5.4 构建及 67 项构建脚本测试，尚需实机验证。原固件包保留。
+
 编译成功后，连接开发板并指定串口烧录（将 `/dev/ttyUSB0` 换成实际端口）：
 
 ```bash
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-烧录会改写开发板 flash，请先确认串口和目标设备。本次源码移植未执行烧录；屏幕方向、裁切、红蓝色序、麦克风声道、功放启停和三键行为仍需实机验证。
+烧录会改写开发板 flash，请先确认串口和目标设备。此前固件已由用户烧录，配网、对话、语音唤醒、屏幕方向与裁切、音量加减、模式键唤起及长按配网均已确认正常。新版本的界面改动仍需重新实机验证。
+
+## 美股与纳斯达克100行情工具
+
+可选的 [美股 MCP 服务](services/us-stock-mcp/README.md) 在电脑上运行，通过 xiaozhi.me 的 MCP 接入点提供报价、自选股和走势分析，无需重新烧录。首版使用 QQQ ETF 作为纳斯达克100走势参考，不提供指数点位。支持明确标识的模拟模式；真实 Alpaca IEX 行情需自行配置 API 凭据。
 
 ## 介绍
 

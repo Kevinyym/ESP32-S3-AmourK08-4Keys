@@ -1,11 +1,11 @@
 #include "wifi_board.h"
 
+#include "amour_k08_text_display.h"
 #include "application.h"
 #include "assets/lang_config.h"
 #include "button.h"
 #include "codecs/no_audio_codec.h"
 #include "config.h"
-#include "display/lcd_display.h"
 #include "led/circular_strip.h"
 
 #include <driver/gpio.h>
@@ -144,9 +144,9 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
 
-        display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
-                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new AmourK08TextDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                           DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                           DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void InitializeButtons() {

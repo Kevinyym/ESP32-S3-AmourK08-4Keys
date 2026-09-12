@@ -22,7 +22,9 @@
 
 ## 显示参数
 
-屏幕逻辑尺寸为 240×240，颜色反转开启，颜色顺序为 BGR。原有 LovyanGFX 配置为 rotation 3、`offset_y=-80`；转换到 `esp_lcd` 后使用 `swap_xy=true`、`mirror_x=false`、`mirror_y=true`、`offset_x=80`、`offset_y=0`。负偏移不能直接照搬到 `esp_lcd`。这些参数来自现有 K08 程序的驱动变换推导，仍需在实机上检查方向、裁切和红蓝色序。
+屏幕逻辑尺寸为 240×240，颜色反转开启，颜色顺序为 BGR。原有 LovyanGFX 配置为 rotation 3、`offset_y=-80`；转换到 `esp_lcd` 后使用 `swap_xy=true`、`mirror_x=false`、`mirror_y=true`、`offset_x=80`、`offset_y=0`。负偏移不能直接照搬到 `esp_lcd`。这些参数来自现有 K08 程序的驱动变换推导；用户已确认方向和裁切正常，红蓝色序未单独反馈。
+
+默认使用适合 240×240 屏幕的微信聊天样式。顶栏固定为 24 px，聊天区占用剩余 216 px；内置文本字体为 16 px，消息左对齐并自动换行，最多保留 20 条消息，加入新内容后滚动到最新消息。存在聊天内容时表情始终隐藏；聊天清空后只显示约 30 px 的静态机器人图标，不加载动态表情。
 
 ## 编译
 
@@ -41,7 +43,7 @@ python3 scripts/build.py amour-k08-4keys --name amour-k08-4keys
 
 2026-09-12 使用 ESP-IDF 5.5.4 执行上述 canonical 构建命令，配置和编译均成功完成。构建确认选择了 `esp32s3`、`CONFIG_BOARD_TYPE_AMOUR_K08_4KEYS=y`、16 MB flash、Octal PSRAM、简体中文资源和 AFE 唤醒词。生成的应用镜像为 2,819,392 字节，最小应用分区剩余 32%。可直接烧录的合并镜像、分片、校验值和完整日志见 [`firmware/amour-k08-4keys-idf5.5.4`](../../../firmware/amour-k08-4keys-idf5.5.4/README.md)。
 
-尚未使用首选的 ESP-IDF 6.0.2 构建，也未烧录实机。显示方向与色序、麦克风左右声道、音频功放时序、三键和四颗 RGB 灯仍需硬件验证。
+尚未使用首选的 ESP-IDF 6.0.2 构建。用户已在改动前的固件上确认语音、屏幕和按键功能正常；本次文字优先 UI 已通过 ESP-IDF 5.5.4 canonical 构建，应用镜像为 2,823,104 字节，分区剩余 32%；67 项构建脚本测试通过。新包见[文字优先界面固件](../../../firmware/amour-k08-4keys-text-ui-idf5.5.4/README.md)，仍需实机检查布局、长文本滚动和主题切换。四颗 RGB 灯及其他未反馈的细节仍需单独验证。
 
 ## 移植基线
 
