@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 import re
 import sys
+import ssl
+import socket
+
+import certifi
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -32,6 +36,32 @@ REQUEST_LOG_PATTERN = re.compile(
 
 class BridgeSessionEnded(RuntimeError):
     """A connection or local server ended and should be restarted."""
+
+
+def create_tls_context() -> ssl.SSLContext:
+    """Keep system trust and add the packaged public CA roots on macOS."""
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
+def connection_error_summary(error: Exception) -> str:
+    """Only return fixed descriptions and numeric codes, never remote text."""
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return "TLS 证书校验失败，请检查 CA 证书或网络代理证书"
+    if isinstance(error, ssl.SSLError):
+        return "TLS 握手失败"
+    if isinstance(error, socket.gaierror):
+        return "DNS 解析失败"
+    if isinstance(error, TimeoutError):
+        return "连接或响应超时"
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if type(status) is int and 100 <= status <= 599:
+        return f"WebSocket 握手被拒绝，HTTP 状态码 {status}"
+    if isinstance(error, OSError):
+        return "网络连接或本地进程错误"
+    return "连接或 MCP 会话异常（详细原文已隐藏）"
 
 
 def validate_endpoint(endpoint: str | None) -> str:
@@ -92,10 +122,29 @@ async def start_server():
     )
 
 
+KNOWN_STOCK_TOOLS = frozenset({
+    "get_stock_quote", "analyze_stock", "get_watchlist", "get_nasdaq100_overview",
+})
+
+
+def log_tool_request(line: str) -> None:
+    """Log dispatch metadata only; never log arguments or arbitrary tool names."""
+    request = json.loads(line)
+    if request.get("method") != "tools/call":
+        return
+    params = request.get("params")
+    name = params.get("name") if isinstance(params, dict) else None
+    if isinstance(name, str) and name in KNOWN_STOCK_TOOLS:
+        LOGGER.info("收到行情工具调用：%s", name)
+    else:
+        LOGGER.warning("收到未注册工具名的调用（名称和参数已隐藏）；请核对后台工具映射。")
+
+
 async def websocket_to_stdio(websocket, process) -> None:
     assert process.stdin is not None
     async for message in websocket:
         line = jsonrpc_line(message)
+        log_tool_request(line)
         process.stdin.write(line.encode("utf-8"))
         await process.stdin.drain()
     raise BridgeSessionEnded("WebSocket ended")
@@ -160,6 +209,7 @@ async def bridge_once(endpoint: str) -> None:
     try:
         async with connect(
             endpoint,
+            ssl=create_tls_context(),
             max_size=MAX_MESSAGE_SIZE,
             ping_interval=30,
             ping_timeout=20,
@@ -203,10 +253,10 @@ async def run_forever(endpoint: str) -> None:
             await bridge_once(endpoint)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             if asyncio.get_running_loop().time() - started_at >= 60:
                 backoff = INITIAL_BACKOFF
-            LOGGER.warning("桥接会话已结束；%d 秒后重连。", backoff)
+            LOGGER.warning("%s；%d 秒后重连。", connection_error_summary(error), backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, MAX_BACKOFF)
 

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import json
 import os
 import sys
+import ssl
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -13,6 +14,37 @@ import bridge
 
 
 class BridgeTests(unittest.TestCase):
+    def test_tls_context_keeps_verification_enabled(self):
+        context = bridge.create_tls_context()
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertGreater(context.cert_store_stats()['x509_ca'], 0)
+
+    def test_connection_errors_never_expose_remote_text(self):
+        secret = 'wss://private.invalid/?token=private-secret'
+        errors = [ssl.SSLCertVerificationError(1, secret), OSError(secret),
+                  RuntimeError(secret), TimeoutError(secret)]
+        http_error = RuntimeError(secret)
+        http_error.response = SimpleNamespace(status_code=401)
+        errors.append(http_error)
+        for error in errors:
+            summary = bridge.connection_error_summary(error)
+            self.assertNotIn('private', summary)
+            self.assertNotIn('token', summary)
+        self.assertIn('401', bridge.connection_error_summary(http_error))
+        self.assertIn('TLS', bridge.connection_error_summary(errors[0]))
+
+    def test_tool_dispatch_log_is_safe(self):
+        with self.assertLogs(bridge.LOGGER, level='INFO') as capture:
+            bridge.log_tool_request(json.dumps({'method': 'tools/call', 'params': {
+                'name': 'get_nasdaq100_overview', 'arguments': {'secret': 'private-secret'}}}))
+            bridge.log_tool_request(json.dumps({'method': 'tools/call', 'params': {
+                'name': 'private-secret', 'arguments': {}}}))
+        output = str(capture.output)
+        self.assertIn('get_nasdaq100_overview', output)
+        self.assertIn('未注册工具名', output)
+        self.assertNotIn('private-secret', output)
+
     def test_endpoint_requires_tls_and_no_userinfo(self):
         for endpoint in [None, '', 'http://example.test', 'ws://example.test',
                          'wss://user:secret@example.test']:

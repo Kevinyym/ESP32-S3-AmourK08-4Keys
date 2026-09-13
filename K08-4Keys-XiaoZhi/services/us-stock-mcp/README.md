@@ -16,6 +16,8 @@
 需要 Python 3.11 或更新版本。在本目录执行。`requirements.lock.txt` 是已经完成本地验证的完整依赖版本；需要重新解析兼容版本时才改用 `requirements.txt`：
 
 ```sh
+# 从 K08-4Keys-XiaoZhi 项目根目录进入服务目录
+cd services/us-stock-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock.txt
@@ -23,6 +25,17 @@ cp .env.example .env
 ```
 
 `.env` 已被 `.gitignore` 忽略。所有密钥只保存在本机，不要把 API 密钥或带 token 的 `MCP_ENDPOINT` 发到聊天、日志或提交到 Git。
+
+若创建环境时报 `Error: [Errno 2] No such file or directory`，先重新进入服务的绝对路径，排除终端仍停留在已卸载或重新挂载目录的情况：
+
+```sh
+cd /Volumes/Docs/Open_source/ESP32-S3-AmourK08-4Keys/K08-4Keys-XiaoZhi/services/us-stock-mcp
+pwd -P
+python3 --version
+python3 -m venv .venv
+```
+
+这条简短报错本身不能确定原因。若仍失败，保留完整错误输出；不要删除已有环境或覆盖 `.env`。外接卷上安装大量 Python 小文件可能较慢。
 
 ## 先在本机验证模拟数据
 
@@ -79,3 +92,11 @@ python bridge.py
 - [Alpaca Historical Bars API](https://docs.alpaca.markets/us/reference/stockbars)
 - [Alpaca Market Data FAQ：IEX 与 SIP 的区别](https://docs.alpaca.markets/us/docs/market-data-faq)
 - [Invesco QQQ 官方说明](https://www.invesco.com/qqq-etf/en/home.html)
+
+## macOS TLS 连接修复（2026-09-13）
+
+若日志只有“正在连接”后持续重连，旧版日志可能隐藏了具体原因。本机已定位到 Python 的 `SSLCertVerificationError`。桥接现保留系统信任，同时加载 `certifi` 公共 CA 证书，保持主机名及证书验证开启；日志仅输出固定错误类别或 HTTP 状态码，不输出接入地址、服务器响应正文或 token。
+
+更新后需 Ctrl+C 停止旧进程并重新运行 `python bridge.py`。不要关闭 TLS 校验。若企业代理使用私有 CA，需要单独正确配置其可信 CA。
+
+本次验证：21 项测试通过；使用本机配置成功连接 xiaozhi.me，并收到 `ListToolsRequest`。20 秒诊断结束后已关闭连接；设备语音调用及真实行情数据仍待验证。
