@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!requirements.lock.txt
+!bridge.py
+!server.py
+!stock_service.py
+!smoke_test.py
+!tests/
+!tests/*.py

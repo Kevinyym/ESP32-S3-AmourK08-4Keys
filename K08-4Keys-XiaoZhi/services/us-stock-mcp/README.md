@@ -2,6 +2,12 @@
 
 这个独立 MCP 服务向小智智能体提供只读的美股/ETF 行情工具。首版“纳斯达克 100 走势”使用 QQQ ETF 作为参考：QQQ 以美元计价，它的价格不是 Nasdaq-100 指数点位，也不是纳斯达克综合指数（IXIC）。当前数据源不能直接提供 NDX 或 IXIC 指数点位。
 
+## 当前状态（2026-09-13）
+
+已完成 xiaozhi.me 官方后台接入、Alpaca IEX 真实行情查询及 K08 设备语音调用验证，用户确认测试成功。当前本机配置已切换为 `live`。22 项自动化测试通过；真实 MCP 调用返回 `is_demo=false`，报价和完整 30 根已结束日线均成功。
+
+当前已在群晖 **DS923+ / DSM 7.3.2** 的 Container Manager 中完成部署，项目路径为 `/volume2/docker/us-stock-mcp`。NAS 日志确认收到心跳及 `get_nasdaq100_overview` 调用，用户确认功能实现。Mac 桥接不再需要同时运行；NAS 需保持开机联网。
+
 ## 工具
 
 - `get_nasdaq100_overview(days=30)`：主要语音入口，同时返回 QQQ 最新成交参考与 5–120 根已结束日线趋势。
@@ -13,7 +19,7 @@
 
 ## 安装
 
-需要 Python 3.11 或更新版本。在本目录执行。`requirements.lock.txt` 是已经完成本地验证的完整依赖版本；需要重新解析兼容版本时才改用 `requirements.txt`：
+需要 Python 3.11 或更新版本。以下命令从项目根目录开始；若已在服务目录，跳过 `cd`。`requirements.lock.txt` 是已经完成本地验证的完整依赖版本；需要重新解析兼容版本时才改用 `requirements.txt`：
 
 ```sh
 # 从 K08-4Keys-XiaoZhi 项目根目录进入服务目录
@@ -21,7 +27,7 @@ cd services/us-stock-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock.txt
-cp .env.example .env
+test -f .env || cp .env.example .env
 ```
 
 `.env` 已被 `.gitignore` 忽略。所有密钥只保存在本机，不要把 API 密钥或带 token 的 `MCP_ENDPOINT` 发到聊天、日志或提交到 Git。
@@ -69,6 +75,51 @@ python bridge.py
 
 `live` 是默认模式。凭据缺失或无效时，工具会清楚报错，绝不会自动退回模拟数据。桥接进程通过当前 Python 解释器启动 `server.py`；连接中断后按 5–60 秒上限退避重连。它必须在一台持续运行且可以访问互联网的电脑或服务器上运行。接入服务本身不需要重新编译或烧录 ESP32 固件。
 
+## 群晖 NAS 部署
+
+已提供 DS923+ / DSM 7.3.2 的 [Container Manager 部署步骤](NAS_DEPLOY.md)、`Dockerfile`、`docker-compose.yml` 和 `.dockerignore`。支持自动重启及日志轮转，无需入站端口；已在 DS923+ 上构建运行，用户确认真实行情语音调用成功。
+
+## 日常启动与工具选择
+
+以下为 Mac 手动验证或回退的启动方式；当前日常服务使用 NAS 容器，回退前先停止 NAS 项目：
+
+```sh
+cd /Volumes/Docs/Open_source/ESP32-S3-AmourK08-4Keys/K08-4Keys-XiaoZhi/services/us-stock-mcp
+/private/tmp/k08-stock-venv/bin/python bridge.py
+```
+
+该命令运行的是本目录的 `bridge.py`，绝对路径仅指定 Python 环境。`/private/tmp` 中的环境是临时验证环境，可能被系统清理；长期使用应按安装步骤创建完整的 `.venv` 并安装锁定依赖，然后使用 `.venv/bin/python bridge.py`。此前外接卷上的 `.venv` 创建在 `ensurepip` 阶段被中止，不能假定该环境已安装完成。
+
+保持电脑联网、唤醒及终端进程运行，同一接入点只运行一个桥接进程。修改 `.env` 后按 Ctrl+C 停止旧进程再启动；若 shell 已导出同名配置变量，它们会优先于 `.env`，需要同步修改或取消导出。
+
+桥接重启、工具配置或角色设定变更后，结束设备当前对话，再重新唤起小智。本次出现 `unknown tool` 后，重新开始对话即恢复；可能与旧会话工具信息有关，尚未确认后台内部原因。
+
+在小智智能体角色设定中追加以下规则，本次已验证可以纠正误选 `searchnews`：
+
+```text
+用户询问纳斯达克100、Nasdaq-100 或 QQQ 的行情和走势时，
+优先调用 get_nasdaq100_overview，默认 days=30。
+searchnews 仅用于查询相关新闻，不能替代行情工具。
+若返回 is_demo=true，必须明确说明是模拟数据；
+若工具不可用或报错，应如实说明，不得编造行情。
+QQQ 是纳斯达克100的 ETF 参考，不是指数点位。
+```
+
+## 连接与调用排查
+
+| 日志或现象 | 含义与处理 |
+| --- | --- |
+| `WebSocket 已连接` | 连接建立；尚不代表工具调用成功。 |
+| `ListToolsRequest` | 后台已请求本地工具列表。 |
+| `PingRequest` | 有协议心跳请求；不代表行情工具已调用。 |
+| `收到行情工具调用：get_nasdaq100_overview` / `CallToolRequest` | 请求已到本机，继续检查返回结果中的 `ok`、`quote.ok`、`trend.ok`、`is_demo` 和时间。 |
+| `收到未注册工具名的调用` | 到达本机的名称不匹配，检查后台工具映射；原始名称和参数不写入日志。 |
+| 小智选择 `searchnews` | 检查角色设定，并重新开始对话。 |
+| `unknown tool` | 先结束旧对话再唤起；若仍失败，保留完整错误中的工具名和同时段桥接日志，核对是否到达本机。 |
+| TLS 证书错误、HTTP 错误或持续重连 | 按日志类别排查证书、认证或网络；不要发送 `.env` 或带 token 的地址。 |
+
+本地实际发布的工具名为 `get_stock_quote`、`analyze_stock`、`get_watchlist` 和 `get_nasdaq100_overview`。
+
 ## 数据边界
 
 - 实时和历史请求固定使用 Alpaca 的 `data.alpaca.markets` 主机、只读 GET 请求及 `feed=iex`。IEX 是单一交易所，不是覆盖全美交易所的 SIP；IEX 价格与成交量不代表全美市场，尤其不能用成交量推断全市场资金流。
@@ -76,14 +127,15 @@ python bridge.py
 - 趋势只使用已结束的日线，区间收益与均线是历史描述，不是未来预测。QQQ 会尽量跟踪 Nasdaq-100，但 ETF 市场价格仍会受供求、买卖价差以及相对净值的溢价/折价影响。
 - `STOCK_DATA_MODE=demo` 的数值完全是合成数据。使用真实行情必须显式设置 `live` 并提供本机凭据。
 
-## 本次验证记录
+## 验证记录
 
-2026-09-12 使用 Python 3.12.4 与 `requirements.lock.txt` 中的依赖完成验证：
-
-- `python -m unittest discover -s tests -v`：19 项通过，覆盖分页、日线排除当天、均线、陈旧/未来时间、缺凭据、限流、坏数据、日志保护和子进程回收。
-- `python smoke_test.py`：真实 MCP stdio 初始化、工具发现和四个工具调用通过，全部使用明确标识的合成数据。
-- 桥接集成测试使用模拟 WebSocket 与真实 `server.py` 子进程；尚未连接 xiaozhi.me，也未使用 Alpaca 真实行情凭据。
-- 现有 ESP32 固件未修改，无需重新烧录。
+- **2026-09-12**：Python 3.12.4 与锁定依赖环境下，19 项自动化测试通过；模拟数据的 MCP 初始化、工具发现与四个工具调用通过。当日尚未验证真实后台和真实行情。
+- **2026-09-13**：修复 TLS CA 配置并增加安全的工具调用诊断，22 项自动化测试通过，覆盖证书校验保持开启、敏感日志保护、工具调用分类及原有行情和桥接逻辑。
+- **2026-09-13**：真实连接 xiaozhi.me 并收到工具列表请求；用户确认模拟模式设备调用成功。
+- **2026-09-13**：通过 MCP 调用 `get_nasdaq100_overview(days=30)`，Alpaca 报价与日线 API 均返回 HTTP 200，`is_demo=false`、`partial=false`，取得完整 30 根日线，并正确标记较旧成交时间。
+- **2026-09-13**：用户确认重新开始对话后，真实行情工具在小智设备上调用成功。长期运行稳定性仍需观察。
+- **2026-09-13**：用户在 DS923+ / DSM 7.3.2 完成容器构建和运行，实际路径 `/volume2/docker/us-stock-mcp`。NAS 日志显示 `PingRequest`、`收到行情工具调用：get_nasdaq100_overview` 和 `CallToolRequest`，随后用户确认功能实现。长期运行及 NAS 重启后的恢复效果仍需观察。
+- 本服务接入未修改 ESP32 固件，无需重新烧录。`smoke_test.py` 始终显式使用模拟模式，不能用它证明真实行情可用。
 
 ## 官方资料
 
@@ -99,4 +151,4 @@ python bridge.py
 
 更新后需 Ctrl+C 停止旧进程并重新运行 `python bridge.py`。不要关闭 TLS 校验。若企业代理使用私有 CA，需要单独正确配置其可信 CA。
 
-本次验证：21 项测试通过；使用本机配置成功连接 xiaozhi.me，并收到 `ListToolsRequest`。20 秒诊断结束后已关闭连接；设备语音调用及真实行情数据仍待验证。
+修复后的真实后台连接、真实行情及设备语音调用均已验证，详见验证记录。
