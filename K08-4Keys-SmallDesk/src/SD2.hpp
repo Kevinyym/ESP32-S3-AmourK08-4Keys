@@ -44,7 +44,7 @@
 #define FONT_COLOR_SEC 0xEC1D
 
 const String WEEK_DAYS[7] = {"日", "一", "二", "三", "四", "五", "六"};
-String cityCode = "101280601";
+String cityCode = "101190401";
 Adafruit_NeoPixel pixels(NUM_LEDS, PIN_WS2812, NEO_GRB + NEO_KHZ800);
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite clk = TFT_eSprite(&tft);

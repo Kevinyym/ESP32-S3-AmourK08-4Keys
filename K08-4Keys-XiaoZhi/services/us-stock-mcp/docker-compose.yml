@@ -1,0 +1,24 @@
+version: "3.8"
+services:
+  us-stock-mcp:
+    build:
+      context: .
+    image: k08-us-stock-mcp:local
+    platform: linux/amd64
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

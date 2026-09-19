@@ -1,0 +1,22 @@
+services:
+  nas-music:
+    build: .
+    container_name: nas-music
+    restart: unless-stopped
+    ports:
+      - "10.0.0.228:8090:8090"
+    volumes:
+      - /volume1/music:/music:ro
+      - nas-music-cache:/cache
+    environment:
+      TRANSCODE_TIMEOUT: "1800"
+      MAX_CLIENTS: "4"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  nas-music-cache:

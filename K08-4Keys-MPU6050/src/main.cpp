@@ -8,14 +8,61 @@ LGFX tft;
 LGFX_Sprite sprite(&tft);
 b2World *myWorld = nullptr;
 unsigned long lastMs = 0;
+bool mpuReady = false;
+bool displayReady = false;
+String sensorDiagnostics;
 
-void inline initTFTDevice() {
+void diagnoseI2C() {
+  sensorDiagnostics = "I2C ACK:";
+  bool found = false;
+  for (uint8_t address = 8; address < 120; ++address) {
+    Wire.beginTransmission(address);
+    if (Wire.endTransmission() == 0) {
+      char label[6];
+      snprintf(label, sizeof(label), " %02X", address);
+      sensorDiagnostics += label;
+      found = true;
+    }
+  }
+  if (!found) sensorDiagnostics += " none";
+  sensorDiagnostics += "\n";
+  for (uint8_t address : {0x68, 0x69}) {
+    char label[40];
+    Wire.beginTransmission(address);
+    Wire.write(MPU6050_WHO_AM_I);
+    if (Wire.endTransmission(true) != 0) {
+      snprintf(label, sizeof(label), "0x%02X: no response\n", address);
+    } else if (Wire.requestFrom(address, uint8_t(1)) != 1) {
+      snprintf(label, sizeof(label), "0x%02X: ID read failed\n", address);
+    } else {
+      snprintf(label, sizeof(label), "0x%02X: ID=0x%02X (want 0x68)\n",
+               address, Wire.read());
+    }
+    sensorDiagnostics += label;
+  }
+  Serial.print(sensorDiagnostics);
+}
+
+bool initTFTDevice() {
   tft.init();
-  tft.setBrightness(60);
-  tft.fillScreen(TFT_BLACK);
+  tft.setBrightness(200);
+  tft.fillScreen(TFT_BLUE);
+  tft.setTextColor(TFT_WHITE, TFT_BLUE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 100);
+  tft.println("K08 starting...");
+  delay(500);
   tft.setColorDepth(8);
   sprite.setColorDepth(8);
-  sprite.createSprite(tft.width(), tft.height());
+  if (!sprite.createSprite(tft.width(), tft.height())) {
+    Serial.println("Display sprite allocation failed");
+    tft.fillScreen(TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setCursor(10, 100);
+    tft.println("Display memory error");
+    return false;
+  }
+  return true;
 }
 
 void createSomeBall() {
@@ -72,31 +119,51 @@ void createSomeWorld() {
 }
 
 void setup() {
-  Wire.setPins(1, 2);
   Serial.begin(115200);
-  initTFTDevice();
+  displayReady = initTFTDevice();
+  if (!displayReady) {
+    return;
+  }
   createSomeWorld();
+  if (!Wire.begin(1, 2, 100000)) {
+    sensorDiagnostics = "I2C controller init failed";
+    Serial.println(sensorDiagnostics);
+    return;
+  }
+  Wire.setTimeOut(50);
   Serial.println("Adafruit MPU6050 test!");
-  if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050 chip");
-    while (1) {
-      delay(10);
-    }
+  mpuReady = mpu.begin(0x68, &Wire) || mpu.begin(0x69, &Wire);
+  if (!mpuReady) {
+    Serial.println("MPU6050 init failed (SDA=1, SCL=2); using demo gravity");
+    diagnoseI2C();
+    return;
   }
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println("MPU6050 Found!");
 }
 
 void loop() {
+  if (!displayReady) {
+    delay(100);
+    return;
+  }
   myWorld->Step(0.1, 6, 2);
   sprite.clear();
   myWorld->DebugDraw();
+  if (!mpuReady) {
+    sprite.setTextColor(TFT_WHITE, TFT_BLACK);
+    sprite.setCursor(4, 4);
+    sprite.println("MPU6050 init failed - demo mode");
+    sprite.println("SDA=1 SCL=2  addr=0x68/0x69");
+    sprite.print(sensorDiagnostics);
+  }
   sprite.pushSprite(0, 0);
-  if (millis() - lastMs >= 1000) {
+  if (mpuReady && millis() - lastMs >= 1000) {
     lastMs = millis();
     sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
-    auto acc = a.acceleration;
-    myWorld->SetGravity(b2Vec2(-acc.y, -acc.x));
+    if (mpu.getEvent(&a, &g, &temp)) {
+      auto acc = a.acceleration;
+      myWorld->SetGravity(b2Vec2(-acc.y, -acc.x));
+    }
   }
 }

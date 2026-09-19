@@ -1,0 +1,5 @@
+mcp>=1.8.1,<2
+httpx>=0.28,<1
+websockets>=15,<17
+python-dotenv>=1,<2
+certifi>=2024.2.2
