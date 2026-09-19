@@ -270,6 +270,15 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
+            if (music_state_.load() == MusicPlaybackState::kPending) {
+                TryStartPendingMusic(music_generation_);
+            }
+            if (pending_chat_after_music_stop_ && !notify_player_.IsBusy()) {
+                pending_chat_after_music_stop_ = false;
+                // Defer the connection to the next main-loop iteration after
+                // the HTTP music worker has released its stream resources.
+                ToggleChatState();
+            }
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
@@ -541,7 +550,10 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+        auto music_state = music_state_.load();
+        if (music_state != MusicPlaybackState::kPending &&
+            music_state != MusicPlaybackState::kPlaying &&
+            GetDeviceState() == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -556,9 +568,17 @@ void Application::InitializeProtocol() {
         }
     });
 
-    protocol_->OnAudioChannelClosed([this, &board]() {
-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    protocol_->OnAudioChannelClosed([this]() {
         Schedule([this]() {
+            if (music_state_.load() == MusicPlaybackState::kPending) {
+                TryStartPendingMusic(music_generation_);
+                return;
+            }
+            if (music_state_.load() == MusicPlaybackState::kPlaying) {
+                return;
+            }
+            auto& board = Board::GetInstance();
+            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -606,17 +626,32 @@ void Application::InitializeProtocol() {
                 StartNotification(std::move(url), std::move(subtitles));
             });
         } else if (strcmp(type->valuestring, "tts") == 0) {
+            auto music_state = music_state_.load();
+            if (music_state == MusicPlaybackState::kPending ||
+                music_state == MusicPlaybackState::kPlaying) {
+                return;
+            }
             auto state = cJSON_GetObjectItem(root, "state");
             if (!cJSON_IsString(state)) {
                 return;
             }
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
+                    auto music_state = music_state_.load();
+                    if (music_state == MusicPlaybackState::kPending ||
+                        music_state == MusicPlaybackState::kPlaying) {
+                        return;
+                    }
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    auto music_state = music_state_.load();
+                    if (music_state == MusicPlaybackState::kPending ||
+                        music_state == MusicPlaybackState::kPlaying) {
+                        return;
+                    }
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -636,6 +671,11 @@ void Application::InitializeProtocol() {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
                     Schedule([display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
+                        auto music_state = Application::GetInstance().GetMusicPlaybackState();
+                        if (music_state == MusicPlaybackState::kPending ||
+                            music_state == MusicPlaybackState::kPlaying) {
+                            return;
+                        }
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -762,10 +802,20 @@ void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
 
 void Application::HandleToggleChatEvent() {
+    CancelMusicRequest();
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
+        // A mode-key press during local music is a stop command. Do not also
+        // open a cloud conversation in the same press: the outgoing music
+        // worker still owns its HTTP stream briefly, which made the UI remain
+        // on "connecting" until a later key press.
+        const bool was_music = music_state_.load() == MusicPlaybackState::kPlaying;
         StopNotification();
+        if (was_music) {
+            pending_chat_after_music_stop_ = false;
+            return;
+        }
         state = kDeviceStateIdle;
     }
 
@@ -788,6 +838,14 @@ void Application::HandleToggleChatEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        if (notify_player_.IsBusy()) {
+            // StopNotification() is immediate for audio output, but the HTTP
+            // worker can need a moment to observe cancellation. Starting MQTT
+            // here caused an intermittent, long-lived "connecting" screen.
+            pending_chat_after_music_stop_ = true;
+            Board::GetInstance().GetDisplay()->ShowNotification("正在停止音乐");
+            return;
+        }
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -826,6 +884,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+    CancelMusicRequest();
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
@@ -879,6 +938,7 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+    CancelMusicRequest();
     if (!protocol_) {
         return;
     }
@@ -1123,6 +1183,7 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 }
 
 void Application::StopNotification() {
+    const bool was_music = music_state_.load() == MusicPlaybackState::kPlaying;
     notify_player_.Stop();
     audio_service_.ResetDecoder();
     auto& board = Board::GetInstance();
@@ -1130,6 +1191,9 @@ void Application::StopNotification() {
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
     if (GetDeviceState() == kDeviceStateNotifying) {
         SetDeviceState(kDeviceStateIdle);
+    }
+    if (was_music) {
+        music_state_.store(MusicPlaybackState::kIdle);
     }
 }
 
@@ -1139,7 +1203,121 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     }
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
+    const bool was_music = music_state_.load() == MusicPlaybackState::kPlaying;
     StopNotification();
+    if (was_music && !success) {
+        music_state_.store(MusicPlaybackState::kFailed);
+        Board::GetInstance().GetDisplay()->ShowNotification("音乐播放失败");
+    }
+}
+
+void Application::RegisterMusicRequestCancelCallback(std::function<void()> callback) {
+    music_request_cancel_callback_ = std::move(callback);
+}
+
+void Application::CancelMusicRequest() {
+    if (music_request_cancel_callback_) {
+        music_request_cancel_callback_();
+    }
+    auto music_state = music_state_.load();
+    if (music_state == MusicPlaybackState::kPending || music_state == MusicPlaybackState::kFailed) {
+        ++music_generation_;
+        pending_music_url_.clear();
+        pending_music_title_.clear();
+        music_state_.store(MusicPlaybackState::kIdle);
+    }
+}
+
+void Application::PlayMusic(std::string audio_url, std::string title,
+                            std::function<bool()> request_is_valid) {
+    Schedule([this, audio_url = std::move(audio_url), title = std::move(title),
+              request_is_valid = std::move(request_is_valid)]() mutable {
+        if (request_is_valid && !request_is_valid()) {
+            return;
+        }
+        if (music_state_.load() == MusicPlaybackState::kPending) {
+            ++music_generation_;
+        }
+        if (GetDeviceState() == kDeviceStateNotifying) {
+            StopNotification();
+        }
+
+        pending_music_url_ = std::move(audio_url);
+        pending_music_title_ = std::move(title);
+        music_state_.store(MusicPlaybackState::kPending);
+        music_close_wait_ticks_ = 0;
+        uint32_t generation = ++music_generation_;
+
+        // Let the server finish its tool response and close the voice channel.
+        // Sending an abort while the MQTT receive task is delivering the tool
+        // call can race esp-mqtt on ESP32-S3. OnAudioChannelClosed() and the
+        // clock tick below will start the pending track immediately afterward.
+        TryStartPendingMusic(generation);
+    });
+}
+
+void Application::TryStartPendingMusic(uint32_t generation) {
+    if (music_state_.load() != MusicPlaybackState::kPending || generation != music_generation_) {
+        return;
+    }
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        // Some tool-call responses from the official MQTT backend do not send
+        // goodbye. After a short grace period, close only the UDP voice
+        // channel with its normal goodbye message. Do not send an MQTT abort:
+        // that races the callback currently processing the tool response.
+        if (music_close_wait_ticks_ == 5) {
+            ESP_LOGI(TAG, "Closing lingering voice channel before music playback");
+            protocol_->CloseAudioChannel();
+            return;
+        }
+        // The official backend can keep the tool-call voice session open for
+        // several seconds after returning the tool result. Give it enough time
+        // to finish before treating it as a stalled session.
+        if (++music_close_wait_ticks_ >= 20) {
+            ESP_LOGE(TAG, "Timed out waiting for the voice audio channel to close");
+            Board::GetInstance().GetDisplay()->ShowNotification("点歌失败：语音通道繁忙");
+            CancelMusicRequest();
+        }
+        return;
+    }
+    StartMusicPlayback(generation);
+}
+
+void Application::StartMusicPlayback(uint32_t generation) {
+    if (music_state_.load() != MusicPlaybackState::kPending || generation != music_generation_) {
+        return;
+    }
+    auto state = GetDeviceState();
+    if (state == kDeviceStateSpeaking || state == kDeviceStateListening ||
+        state == kDeviceStateConnecting) {
+        SetDeviceState(kDeviceStateIdle);
+    }
+    if (GetDeviceState() != kDeviceStateIdle) {
+        Board::GetInstance().GetDisplay()->ShowNotification("点歌失败：设备忙");
+        CancelMusicRequest();
+        return;
+    }
+
+    auto title = pending_music_title_;
+    auto url = pending_music_url_;
+    pending_music_title_.clear();
+    pending_music_url_.clear();
+    music_state_.store(MusicPlaybackState::kPlaying);
+    StartNotification(std::move(url), {{.start_ms = 0, .text = std::move(title)}});
+    if (GetDeviceState() != kDeviceStateNotifying) {
+        music_state_.store(MusicPlaybackState::kFailed);
+        Board::GetInstance().GetDisplay()->ShowNotification("音乐播放失败");
+    }
+}
+
+void Application::StopMusic() {
+    Schedule([this]() {
+        const bool was_playing = music_state_.load() == MusicPlaybackState::kPlaying;
+        CancelMusicRequest();
+        if (was_playing) {
+            StopNotification();
+        }
+    });
 }
 
 void Application::Schedule(std::function<void()>&& callback) {

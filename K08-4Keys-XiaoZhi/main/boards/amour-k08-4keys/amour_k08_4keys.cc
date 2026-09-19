@@ -6,7 +6,9 @@
 #include "button.h"
 #include "codecs/no_audio_codec.h"
 #include "config.h"
+#include "http.h"
 #include "led/circular_strip.h"
+#include "mcp_server.h"
 
 #include <driver/gpio.h>
 #include <driver/i2s_std.h>
@@ -15,8 +17,14 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
+#include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -70,6 +78,7 @@ public:
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
+        InitializeMusicTools();
         GetBacklight()->RestoreBrightness();
     }
 
@@ -95,6 +104,335 @@ private:
     Button volume_up_button_;
     Button volume_down_button_;
     LcdDisplay* display_ = nullptr;
+    std::atomic<uint32_t> music_search_generation_{0};
+    std::atomic<bool> music_worker_running_{false};
+    std::mutex music_status_mutex_;
+    std::string music_status_ = "idle";
+    std::string music_title_;
+
+    struct MusicSearchRequest {
+        AmourK08FourKeysBoard* board;
+        uint32_t generation;
+        std::string query;
+        bool play;
+    };
+
+    static std::string UrlEncode(const std::string& value) {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string encoded;
+        encoded.reserve(value.size() * 3);
+        for (unsigned char ch : value) {
+            if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+                encoded.push_back(static_cast<char>(ch));
+            } else {
+                encoded.push_back('%');
+                encoded.push_back(kHex[ch >> 4]);
+                encoded.push_back(kHex[ch & 0x0f]);
+            }
+        }
+        return encoded;
+    }
+
+    static void TrimAsciiWhitespace(std::string& value) {
+        const auto first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
+            value.clear();
+            return;
+        }
+        const auto last = value.find_last_not_of(" \t\r\n");
+        value = value.substr(first, last - first + 1);
+    }
+
+    static void EraseAll(std::string& value, const char* token) {
+        const size_t token_length = std::strlen(token);
+        for (size_t position = value.find(token); position != std::string::npos;
+             position = value.find(token, position)) {
+            value.erase(position, token_length);
+        }
+    }
+
+    static std::string NormalizeMusicQuery(std::string query) {
+        // The cloud model may send values such as “周杰伦的《以父之名》” or
+        // “播放以父之名”. Prefer the quoted song name, then remove common
+        // conversational words so the NAS receives a title keyword.
+        const auto quoted_begin = query.find("《");
+        const auto quoted_end = quoted_begin == std::string::npos
+                                    ? std::string::npos
+                                    : query.find("》", quoted_begin + std::strlen("《"));
+        if (quoted_begin != std::string::npos && quoted_end != std::string::npos &&
+            quoted_end > quoted_begin + std::strlen("《")) {
+            query = query.substr(quoted_begin + std::strlen("《"),
+                                 quoted_end - quoted_begin - std::strlen("《"));
+        }
+
+        TrimAsciiWhitespace(query);
+        static constexpr const char* kPrefixes[] = {
+            "请帮我播放", "请播放", "播放一下", "播放", "我想听", "我要听", "想听",
+            "来一首",     "放一首", "歌曲",     "音乐",
+        };
+        bool removed_prefix = true;
+        while (removed_prefix && !query.empty()) {
+            removed_prefix = false;
+            for (const char* prefix : kPrefixes) {
+                const size_t length = std::strlen(prefix);
+                if (query.compare(0, length, prefix) == 0) {
+                    query.erase(0, length);
+                    TrimAsciiWhitespace(query);
+                    removed_prefix = true;
+                    break;
+                }
+            }
+        }
+
+        static constexpr const char* kDecorations[] = {
+            "《", "》", "“", "”", "‘", "’", "\"", "，", "。", "！", "？", "!", "?",
+        };
+        for (const char* decoration : kDecorations) {
+            EraseAll(query, decoration);
+        }
+        static constexpr const char* kSuffixes[] = {"这首歌", "这首歌曲", "这首音乐"};
+        for (const char* suffix : kSuffixes) {
+            const size_t length = std::strlen(suffix);
+            if (query.size() >= length &&
+                query.compare(query.size() - length, length, suffix) == 0) {
+                query.erase(query.size() - length);
+                break;
+            }
+        }
+        TrimAsciiWhitespace(query);
+        return query;
+    }
+
+    void SetMusicStatus(std::string status, std::string title = {}) {
+        std::lock_guard<std::mutex> lock(music_status_mutex_);
+        music_status_ = std::move(status);
+        music_title_ = std::move(title);
+    }
+
+    void CancelMusicSearch() {
+        ++music_search_generation_;
+        if (music_worker_running_.load()) {
+            SetMusicStatus("cancelled");
+        }
+    }
+
+    static bool IsTrackId(const char* id) {
+        if (id == nullptr || std::strlen(id) != 64) {
+            return false;
+        }
+        for (size_t i = 0; i < 64; ++i) {
+            if (!std::isxdigit(static_cast<unsigned char>(id[i]))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static void MusicSearchTask(void* arg) {
+        std::unique_ptr<MusicSearchRequest> request(static_cast<MusicSearchRequest*>(arg));
+        request->board->RunMusicSearch(*request);
+        request->board->music_worker_running_.store(false);
+        request.reset();
+        vTaskDelete(nullptr);
+    }
+
+    void RunMusicSearch(const MusicSearchRequest& request) {
+        constexpr size_t kMaxResponseBytes = 16 * 1024;
+        std::string error = "搜索失败";
+        std::string response;
+        auto http = GetNetwork()->CreateHttp(0);
+        if (http) {
+            http->SetTimeout(5000);
+            // Keep the TCP connection open until this task closes it. The ESP HTTP
+            // client can deadlock when a peer closes a response concurrently with
+            // its receive callback.
+            http->SetKeepAlive(true);
+            http->SetHeader("Accept", "application/json");
+            const std::string normalized_query = NormalizeMusicQuery(request.query);
+            ESP_LOGI(TAG, "Music search query: raw='%s', normalized='%s'", request.query.c_str(),
+                     normalized_query.c_str());
+            std::string url = "http://10.0.0.228:8090/search?q=" +
+                              UrlEncode(normalized_query.empty() ? request.query : normalized_query) +
+                              "&limit=5";
+            if (http->Open("GET", url)) {
+                int status = http->GetStatusCode();
+                if (status >= 200 && status < 300) {
+                    std::array<char, 1024> buffer;
+                    const int64_t deadline = esp_timer_get_time() + 10000000;
+                    while (response.size() <= kMaxResponseBytes) {
+                        if (request.generation != music_search_generation_.load()) {
+                            error = "cancelled";
+                            break;
+                        }
+                        if (esp_timer_get_time() >= deadline) {
+                            error = "搜索响应超时";
+                            break;
+                        }
+                        int count = http->Read(buffer.data(), buffer.size());
+                        if (count < 0) {
+                            error = "读取搜索结果失败";
+                            break;
+                        }
+                        if (count == 0) {
+                            error.clear();
+                            break;
+                        }
+                        response.append(buffer.data(), count);
+                    }
+                    if (response.size() > kMaxResponseBytes) {
+                        error = "搜索结果过大";
+                    }
+                    ESP_LOGI(TAG, "Music search HTTP %d, response bytes=%u", status,
+                             static_cast<unsigned>(response.size()));
+                } else {
+                    error = "NAS 搜索服务返回错误";
+                }
+            } else {
+                error = "无法连接 NAS";
+            }
+            http->Close();
+        }
+
+        std::string id;
+        std::string title;
+        std::string matches;
+        int total_matches = 0;
+        if (error.empty()) {
+            cJSON* root = cJSON_ParseWithLength(response.data(), response.size());
+            cJSON* tracks = root ? cJSON_GetObjectItem(root, "tracks") : nullptr;
+            cJSON* total = root ? cJSON_GetObjectItem(root, "total") : nullptr;
+            if (cJSON_IsNumber(total) && total->valuedouble >= 0 && total->valuedouble <= 10000) {
+                total_matches = total->valueint;
+            }
+            if (!cJSON_IsArray(tracks)) {
+                error = "没有找到可播放歌曲";
+            } else {
+                const int count = cJSON_GetArraySize(tracks);
+                if (total_matches == 0) {
+                    total_matches = count;
+                }
+                for (int index = 0; index < count && index < 5; ++index) {
+                    cJSON* track = cJSON_GetArrayItem(tracks, index);
+                    cJSON* id_json = track ? cJSON_GetObjectItem(track, "id") : nullptr;
+                    cJSON* title_json = track ? cJSON_GetObjectItem(track, "title") : nullptr;
+                    if (!cJSON_IsString(id_json) || !IsTrackId(id_json->valuestring) ||
+                        !cJSON_IsString(title_json) || title_json->valuestring[0] == '\0' ||
+                        std::strlen(title_json->valuestring) > 256) {
+                        continue;
+                    }
+                    if (id.empty()) {
+                        id = id_json->valuestring;
+                        title = title_json->valuestring;
+                    }
+                    if (!matches.empty()) {
+                        matches += " | ";
+                    }
+                    matches += title_json->valuestring;
+                }
+                if (id.empty()) {
+                    error = "没有找到可播放歌曲";
+                }
+            }
+            cJSON_Delete(root);
+        }
+
+        if (!error.empty()) {
+            ESP_LOGW(TAG, "Music search failed: %s", error.c_str());
+        }
+
+        if (request.generation != music_search_generation_.load()) {
+            return;
+        }
+        if (!error.empty()) {
+            SetMusicStatus("error: " + error);
+            Application::GetInstance().Schedule(
+                [error]() { Board::GetInstance().GetDisplay()->ShowNotification(error.c_str()); });
+            return;
+        }
+
+        if (!request.play) {
+            matches = "共" + std::to_string(total_matches) + "首，前" +
+                      std::to_string(std::min(total_matches, 5)) + "首：" + matches;
+            SetMusicStatus("found", matches);
+            return;
+        }
+        SetMusicStatus("accepted", title);
+        Application::GetInstance().PlayMusic("http://10.0.0.228:8090/tracks/" + id + ".ogg", title,
+                                             [this, generation = request.generation]() {
+                                                 return generation ==
+                                                        music_search_generation_.load();
+                                             });
+    }
+
+    ReturnValue StartMusicSearch(const std::string& query, bool play) {
+        if (query.empty() || query.size() > 256) {
+            return std::string("error: query must be 1-256 bytes");
+        }
+        bool expected = false;
+        if (!music_worker_running_.compare_exchange_strong(expected, true)) {
+            return std::string("busy: a search is already running");
+        }
+        uint32_t generation = ++music_search_generation_;
+        SetMusicStatus("searching", query);
+        auto* request = new MusicSearchRequest{this, generation, query, play};
+        if (xTaskCreate(MusicSearchTask, "music_search", 6144, request, 2, nullptr) != pdPASS) {
+            delete request;
+            music_worker_running_.store(false);
+            SetMusicStatus("error: cannot start search worker");
+            return std::string("error: cannot start search worker");
+        }
+        return std::string(play ? "accepted: searching NAS music library" :
+                                  "accepted: searching NAS music library without playback");
+    }
+
+    void InitializeMusicTools() {
+        auto& app = Application::GetInstance();
+        app.RegisterMusicRequestCancelCallback([this]() { CancelMusicSearch(); });
+        auto& mcp = McpServer::GetInstance();
+        mcp.AddTool("self.music.play",
+                    "搜索 NAS 曲库并异步播放匹配度最高的可用歌曲。query 只填写歌名或歌手关键词，"
+                    "不要包含‘播放’等命令词。调用会立即返回 accepted；请用 self.music.status "
+                    "查询搜索或播放结果。",
+                    PropertyList({Property("query", kPropertyTypeString)}),
+                    [this](const PropertyList& properties) -> ReturnValue {
+                        return StartMusicSearch(properties["query"].value<std::string>(), true);
+                    });
+        mcp.AddTool("self.music.search",
+                    "只搜索 NAS 曲库，不播放音乐。用于回答曲库是否有某首歌或某位歌手；"
+                    "query 只填写歌名或歌手关键词。调用后用 self.music.status 读取最多三条匹配结果。",
+                    PropertyList({Property("query", kPropertyTypeString)}),
+                    [this](const PropertyList& properties) -> ReturnValue {
+                        return StartMusicSearch(properties["query"].value<std::string>(), false);
+                    });
+        mcp.AddTool("self.music.stop", "取消待处理的点歌或停止当前音乐。", PropertyList(),
+                    [this](const PropertyList&) -> ReturnValue {
+                        CancelMusicSearch();
+                        Application::GetInstance().StopMusic();
+                        SetMusicStatus("idle");
+                        return std::string("stopped");
+                    });
+        mcp.AddTool("self.music.status", "查询 NAS 点歌的搜索和播放状态。", PropertyList(),
+                    [this](const PropertyList&) -> ReturnValue {
+                        auto core_state = Application::GetInstance().GetMusicPlaybackState();
+                        std::lock_guard<std::mutex> lock(music_status_mutex_);
+                        if (core_state == MusicPlaybackState::kPlaying) {
+                            return std::string("playing: ") + music_title_;
+                        }
+                        if (core_state == MusicPlaybackState::kPending) {
+                            return std::string("pending: ") + music_title_;
+                        }
+                        if (core_state == MusicPlaybackState::kFailed) {
+                            return std::string("error: playback failed");
+                        }
+                        if (music_status_ == "accepted") {
+                            return std::string("idle");
+                        }
+                        if (music_status_ == "found") {
+                            return std::string("found: ") + music_title_;
+                        }
+                        return music_status_;
+                    });
+    }
 
     void InitializeRedLed() {
         gpio_config_t io_config = {};
@@ -150,12 +488,15 @@ private:
     }
 
     void InitializeButtons() {
-        mode_button_.OnClick([]() {
+        mode_button_.OnClick([this]() {
+            CancelMusicSearch();
             auto& app = Application::GetInstance();
             app.Schedule([&app]() { app.ToggleChatState(); });
         });
         mode_button_.OnLongPress([this]() {
+            CancelMusicSearch();
             auto& app = Application::GetInstance();
+            app.StopMusic();
             app.Schedule([this]() { EnterWifiConfigMode(); });
         });
 

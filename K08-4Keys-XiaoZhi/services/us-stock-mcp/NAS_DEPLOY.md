@@ -4,7 +4,7 @@
 
 ## 1. 准备目录和文件
 
-在套件中心安装 Container Manager。在 File Station 建立共享文件夹内的 `docker/us-stock-mcp`，本次实际路径为 `/volume2/docker/us-stock-mcp`；其他设备按实际存储卷调整。
+在套件中心安装 Container Manager。在 File Station 建立共享文件夹内的 `docker/us-stock-mcp`，例如 `/volume1/docker/us-stock-mcp`；存储卷不同则以实际路径为准。
 
 把以下文件从 Mac 的本服务目录上传到该目录，保持结构：
 
@@ -34,7 +34,7 @@ tests/（其中的 .py 文件）
 - 不启用 Web Station 门户。
 - 先构建，不启动；若向导只能构建并启动，请先停止 Mac 桥接。
 
-构建会下载 Python 镜像，并安装锁定的依赖。本次已在 DS923+ 成功构建并运行；后续重新构建仍以实际日志为准。若失败，保留报错，不要自行取消依赖锁定或关闭 TLS 校验。
+构建会下载 Python 镜像，并安装锁定的依赖。当前电脑没有 Docker，尚未验证容器构建；依赖在 Linux amd64 的安装结果以 NAS 构建日志为准。若失败，保留报错，不要自行取消依赖锁定或关闭 TLS 校验。
 
 ## 3. 切换到 NAS
 
@@ -68,16 +68,8 @@ sudo docker compose logs --tail=80 -f
 
 本地模拟协议检查可在容器终端运行 `python smoke_test.py`，它明确使用模拟数据，不连接小智后台，也不证明真实行情可用。
 
-## 本次部署排查经验
-
-- 必须使用 `services/us-stock-mcp/` 内的 Dockerfile 和 Compose 文件。正确首行为 `FROM python:3.12-slim-bookworm`；若日志出现 `espressif/idf`，说明误用了固件编译环境的 Dockerfile，应停止错误构建并核对文件及项目路径。
-- `Pulling fs layer`、`Removing intermediate container` 是正常构建过程；日志里的 `[1A`、`[2K` 等是终端控制符显示问题。进度看似不变时先滚动到底部查看最新输出。
-- 构建期间项目操作可能全部禁用，关闭日志窗口不会取消构建。若必须停止整个 Container Manager 套件，应先评估其对其他容器服务的影响。
-- 本容器日志默认使用 UTC，比北京时间少 8 小时。工具返回的成交时间包含时区；无需为日志显示差异修改行情时间计算。
-- 只有心跳或工具调用日志不能证明返回成功；还需核对工具结果和小智实际播报。本次已由用户完成这一步确认。
-
 ## 验证状态
 
-2026-09-13：Mac 端已有 22 项自动化测试通过。用户在 DS923+ / DSM 7.3.2 上完成镜像构建、容器运行及 K08 真实行情语音调用，确认功能实现。NAS 日志显示心跳、`get_nasdaq100_overview` 和 `CallToolRequest`。长期稳定性及 NAS 重启后的恢复尚未单独验证。
+Mac 上真实行情、后台连接及 K08 语音调用已验证，22 项自动化测试通过。本次新增部署文件已做静态检查，尚未在 DS923+ 上构建和运行；迁移完成后再补充 NAS 验证记录。
 
 官方操作参考：[Container Manager 项目](https://kb.synology.com/en-us/DSM/help/ContainerManager/docker_project)。

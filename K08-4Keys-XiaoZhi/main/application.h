@@ -6,12 +6,13 @@
 #include <freertos/task.h>
 #include <esp_timer.h>
 
-#include <string>
-#include <mutex>
-#include <deque>
-#include <memory>
-#include <functional>
+#include <atomic>
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 #include "protocol.h"
@@ -42,6 +43,13 @@ enum AecMode {
     kAecOff,
     kAecOnDeviceSide,
     kAecOnServerSide,
+};
+
+enum class MusicPlaybackState {
+    kIdle,
+    kPending,
+    kPlaying,
+    kFailed,
 };
 
 class Application {
@@ -117,6 +125,11 @@ public:
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
+    void PlayMusic(std::string audio_url, std::string title,
+                   std::function<bool()> request_is_valid = nullptr);
+    void StopMusic();
+    MusicPlaybackState GetMusicPlaybackState() const { return music_state_.load(); }
+    void RegisterMusicRequestCancelCallback(std::function<void()> callback);
     AudioService& GetAudioService() { return audio_service_; }
     
     /**
@@ -142,6 +155,13 @@ private:
     AudioService audio_service_;
     NotifyPlayer notify_player_;
     uint32_t notification_playback_id_ = 0;
+    std::atomic<MusicPlaybackState> music_state_{MusicPlaybackState::kIdle};
+    uint32_t music_generation_ = 0;
+    int music_close_wait_ticks_ = 0;
+    bool pending_chat_after_music_stop_ = false;
+    std::string pending_music_url_;
+    std::string pending_music_title_;
+    std::function<void()> music_request_cancel_callback_;
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;
@@ -170,6 +190,9 @@ private:
     void StartListeningAudio();
     void ConfigureWakeWordForListening();
     void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles);
+    void StartMusicPlayback(uint32_t generation);
+    void TryStartPendingMusic(uint32_t generation);
+    void CancelMusicRequest();
     void StopNotification();
     void HandleNotificationFinished(uint32_t playback_id, bool success);
 

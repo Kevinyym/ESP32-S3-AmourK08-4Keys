@@ -184,6 +184,10 @@ void NotifyPlayer::WorkerTask() {
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
     if (http) {
         http->SetTimeout(kHttpTimeoutMs);
+        // The NAS sends a Content-Length. Keep the TCP connection open until
+        // Close() runs so the ESP HTTP client's disconnect callback cannot race
+        // with stream decoding.
+        http->SetKeepAlive(true);
         http->SetHeader("Accept", "audio/ogg, application/ogg");
         http->SetHeader("Accept-Encoding", "identity");
         const bool opened = http->Open("GET", audio_url);
