@@ -23,6 +23,36 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 烧录会改写开发板 flash，请先确认串口和目标设备。此前固件已由用户烧录，配网、对话、语音唤醒、屏幕方向与裁切、音量加减、模式键唤起及长按配网均已确认正常。新版本的界面改动仍需重新实机验证。
 
+## Fork 同步与功能分支合并
+
+本项目在个人 Fork 中开发时，`origin` 指向自己的仓库，`upstream` 指向原作者仓库。先在功能分支完成验证并提交；不向原项目提交 PR 时，合并到自己的 `main` 后推送 `origin` 即可：
+
+```sh
+# 在当前功能分支提交完成的功能（本项目当前为 feature/k08-local-development）
+git switch feature/k08-local-development
+git status
+git add services/nas-music README_zh.md firmware/
+git commit -m "feat: add NAS music support"
+
+# 同步原项目，再合并自己的功能分支
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+git merge --no-ff feature/k08-local-development -m "feat: merge K08 local development"
+git push origin main
+```
+
+以后需要吸收原项目的更新时，重复以下操作即可；个人功能提交会保留：
+
+```sh
+git fetch upstream
+git switch main
+git merge upstream/main
+git push origin main
+```
+
+先用 `git branch -r` 确认原项目的默认分支；若它是 `master`，将上述命令中的 `upstream/main` 改为 `upstream/master`。出现冲突时，修改冲突文件后执行 `git add <文件>`、`git commit` 和 `git push origin main`。确认不再需要功能分支后，可执行 `git branch -d feature/k08-local-development` 删除本地分支。其他分支名称可通过 `git branch --show-current` 查询，并替换命令中的分支名。
+
 ## 美股与纳斯达克100行情工具
 
 可选的 [美股 MCP 服务](services/us-stock-mcp/README.md) 在电脑上运行，通过 xiaozhi.me 的 MCP 接入点提供报价、自选股和走势分析，无需重新烧录。首版使用 QQQ ETF 作为纳斯达克100走势参考，不提供指数点位。支持明确标识的模拟模式；真实 Alpaca IEX 行情需自行配置 API 凭据。
@@ -31,7 +61,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 [NAS 音乐 HTTP 服务](services/nas-music/README.md) 已部署在 DS923+ 的 `10.0.0.228:8090`，只读扫描 `/volume1/music` 中的 FLAC，并缓存为 K08 可播放的 Ogg Opus。2026-09-19 健康检查显示 344 首曲目均已就绪。设备端语音点歌、停止和屏幕播放状态代码已加入当前源码；可烧录文件见 [NAS 音乐固件包](firmware/amour-k08-4keys-nas-music-idf5.5.4/README.md)。
 
-2026-09-19 已完成实机验证：官方后台调用 `self.music.play` 后，K08 能搜索 NAS、关闭遗留的官方语音通道并播放歌曲。NAS 服务使用 HTTP/1.1 持久连接；更新服务后须重新创建容器，不能只构建镜像。`self.music.search` 可单独检索曲库；最新 NAS 服务会返回总匹配数，K08 会显示“共 N 首，前 5 首”，并将音乐文件的相对目录纳入检索，所以 `周杰伦/七里香/晴天.flac` 可用“周杰伦”或“周杰伦 晴天”找到。播放中短按模式键会立即停止音乐并回到待机；下一次短按会等音乐连接关闭后再进入对话，避免界面停留在“连接中”。语音唤醒打断音乐仍待后续单独验证。
+2026-09-19 已完成实机验证：官方后台调用 `self.music.play` 后，K08 能搜索 NAS、关闭遗留的官方语音通道并播放歌曲。NAS 服务使用 HTTP/1.1 持久连接；更新服务后须重新创建容器，不能只构建镜像。`self.music.search` 可单独检索曲库；最新 NAS 服务会返回总匹配数，K08 会显示“共 N 首，前 5 首”，并将音乐文件的相对目录纳入检索，所以 `周杰伦/七里香/晴天.flac` 可用“周杰伦”或“周杰伦 晴天”找到。转码会清除 FLAC 标签与封面图，避免过大的 Ogg 标签包导致 K08 播放失败；此服务升级会自动重新转码缓存歌曲。播放中短按模式键会立即停止音乐并回到待机；下一次短按会等音乐连接关闭后再进入对话，避免界面停留在“连接中”。语音唤醒打断音乐仍待后续单独验证。
 
 ## 介绍
 

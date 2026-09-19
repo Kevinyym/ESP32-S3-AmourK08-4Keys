@@ -29,7 +29,7 @@ Compose 将源目录只读挂载为 `/music:ro`，将转码结果保存到 Docke
 
 首次启动后 FFmpeg 会逐首转换，104 个 FLAC 可能需要一段时间。转换期间健康检查可用，只有 ready 曲目会出现在搜索中。重启会复用缓存。源文件相对路径改变后会得到新 ID，旧缓存不会被提供；可在维护窗口删除 named volume 来回收旧文件。
 
-转码格式已经按固件 `main/audio/demuxer/ogg_demuxer.cc` 固定为 Ogg Opus、单声道、24 kHz、48 kbps、60 ms 帧。
+转码格式已经按固件 `main/audio/demuxer/ogg_demuxer.cc` 固定为 Ogg Opus、单声道、24 kHz、48 kbps、60 ms 帧。转码会移除源 FLAC 的标签及封面图，避免很大的 `OpusTags` 数据包超过 K08 的 Ogg 解复用缓冲区。服务版本升级后会自动重新转码缓存中的曲目；原始 FLAC 不会被修改。
 
 ## API
 

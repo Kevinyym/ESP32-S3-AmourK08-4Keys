@@ -24,7 +24,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 LOG = logging.getLogger("nas-music")
 TRACK_RE = re.compile(r"^/tracks/([0-9a-f]{64})\.ogg$")
 MAX_TITLE_CHARS = 160
-ENCODING_VERSION = "opus-mono-24000-48k-60ms-v1"
+# Do not copy source metadata into OpusTags. Source FLAC files can include
+# cover-art blocks large enough to exceed the K08's deliberately bounded Ogg
+# packet buffer before the first audio packet arrives.
+ENCODING_VERSION = "opus-mono-24000-48k-60ms-v2-no-metadata"
 
 
 @dataclass(frozen=True)
@@ -120,7 +123,8 @@ class Library:
             command = [
                 self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                 "-protocol_whitelist", "file,pipe",
-                "-i", os.fspath(resolved), "-map", "0:a:0", "-vn", "-ac", "1",
+                "-i", os.fspath(resolved), "-map", "0:a:0", "-map_metadata", "-1",
+                "-vn", "-ac", "1",
                 "-ar", "24000", "-c:a", "libopus", "-b:a", "48k",
                 "-application", "audio", "-frame_duration", "60", "-vbr", "on",
                 "-f", "ogg", os.fspath(temporary),
