@@ -127,9 +127,15 @@ public:
     void PlaySound(const std::string_view& sound);
     void PlayMusic(std::string audio_url, std::string title,
                    std::function<bool()> request_is_valid = nullptr);
+    void PlayExternalMedia(std::string title, std::function<bool()> start,
+                           std::function<void()> stop);
+    void FinishExternalMedia(bool success, std::string error = {});
     void StopMusic();
     MusicPlaybackState GetMusicPlaybackState() const { return music_state_.load(); }
     void RegisterMusicRequestCancelCallback(std::function<void()> callback);
+    // NAS 点歌使用 Ogg 通知播放器；网络电台走独立的外部媒体通道。将 NAS 的
+    // 生命周期单独通知给开发板，避免两个播放页互相覆盖。
+    void RegisterNasMusicPlaybackCallback(std::function<void(MusicPlaybackState)> callback);
     AudioService& GetAudioService() { return audio_service_; }
     
     /**
@@ -161,7 +167,12 @@ private:
     bool pending_chat_after_music_stop_ = false;
     std::string pending_music_url_;
     std::string pending_music_title_;
+    std::function<bool()> pending_external_media_start_;
+    std::function<void()> external_media_stop_;
+    bool external_media_active_ = false;
+    bool nas_music_active_ = false;
     std::function<void()> music_request_cancel_callback_;
+    std::function<void(MusicPlaybackState)> nas_music_playback_callback_;
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;
@@ -191,10 +202,12 @@ private:
     void ConfigureWakeWordForListening();
     void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles);
     void StartMusicPlayback(uint32_t generation);
+    void StartExternalMedia(uint32_t generation);
     void TryStartPendingMusic(uint32_t generation);
     void CancelMusicRequest();
     void StopNotification();
     void HandleNotificationFinished(uint32_t playback_id, bool success);
+    void SetNasMusicPlaybackState(MusicPlaybackState state);
 
     // Activation task (runs in background)
     void ActivationTask();

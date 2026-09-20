@@ -21,37 +21,47 @@ python3 scripts/build.py amour-k08-4keys --name amour-k08-4keys
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-烧录会改写开发板 flash，请先确认串口和目标设备。此前固件已由用户烧录，配网、对话、语音唤醒、屏幕方向与裁切、音量加减、模式键唤起及长按配网均已确认正常。新版本的界面改动仍需重新实机验证。
+烧录会改写开发板 flash，请先确认串口和目标设备。用户已完成当前版本初步实机测试：配网、对话、语音唤醒、屏幕方向与裁切、音量加减、模式键唤起及长按配网均正常；网络电台连续换台不会退出播放页。当前继续进行长时播放、网络恢复和跨功能回归测试。
 
 ## Fork 同步与功能分支合并
 
-本项目在个人 Fork 中开发时，`origin` 指向自己的仓库，`upstream` 指向原作者仓库。先在功能分支完成验证并提交；不向原项目提交 PR 时，合并到自己的 `main` 后推送 `origin` 即可：
+NAS 音乐与网络电台都属于同一份 K08 组合固件；推荐在各自功能分支开发，验证后再合并到自己的 Fork `main`。
 
+功能完成后先在对应分支提交，例如：
 ```sh
-# 在当前功能分支提交完成的功能（本项目当前为 feature/k08-local-development）
 git switch feature/k08-local-development
 git status
 git add services/nas-music README_zh.md firmware/
 git commit -m "feat: add NAS music support"
+```
 
-# 同步原项目，再合并自己的功能分支
+### 首次配置原项目远端：只需执行一次
+
+将“原作者仓库地址”替换为实际地址。本项目当前使用的示例是 `https://github.com/zhuhai-esp/ESP32-S3-AmourK08-4Keys.git`。
+
+```sh
+# 首次配置原项目远端：只需执行一次
+git remote add upstream 原作者仓库地址
+
+# 查看远端是否正确, `origin` 应指向你的 Fork，`upstream` 应指向原项目。
+git remote -v
+
+# 更新本地 main，使其与原项目主分支同步
 git fetch upstream
 git switch main
 git merge --ff-only upstream/main
-git merge --no-ff feature/k08-local-development -m "feat: merge K08 local development"
-git push origin main
-```
 
-以后需要吸收原项目的更新时，重复以下操作即可；个人功能提交会保留：
-
-```sh
-git fetch upstream
+# 将功能分支合并到自己的 main,`--no-ff` 会留下清晰的功能合并节点。
 git switch main
-git merge upstream/main
-git push origin main
+git merge --no-ff feature/k08-local-development -m "feat: merge K08 local development"
+git push origin main # 推送到你的 Fork
 ```
 
-先用 `git branch -r` 确认原项目的默认分支；若它是 `master`，将上述命令中的 `upstream/main` 改为 `upstream/master`。出现冲突时，修改冲突文件后执行 `git add <文件>`、`git commit` 和 `git push origin main`。确认不再需要功能分支后，可执行 `git branch -d feature/k08-local-development` 删除本地分支。其他分支名称可通过 `git branch --show-current` 查询，并替换命令中的分支名。
+当自己的 `main` 已有功能提交时，`--ff-only` 会因历史分叉而停止，这是预期行为。此后吸收原项目更新时使用普通合并：`git merge upstream/main`。若原项目默认分支是 `master`，将本文的 `upstream/main` 替换为 `upstream/master`。
+
+
+
+出现冲突时，修改冲突文件后执行 `git add <文件>`、`git commit` 和 `git push origin main`。确认不再需要功能分支后，可执行 `git branch -d feature/k08-local-development` 删除本地分支。其他分支名称可通过 `git branch --show-current` 查询，并替换命令中的分支名。
 
 ## 美股与纳斯达克100行情工具
 
@@ -61,7 +71,40 @@ git push origin main
 
 [NAS 音乐 HTTP 服务](services/nas-music/README.md) 已部署在 DS923+ 的 `10.0.0.228:8090`，只读扫描 `/volume1/music` 中的 FLAC，并缓存为 K08 可播放的 Ogg Opus。2026-09-19 健康检查显示 344 首曲目均已就绪。设备端语音点歌、停止和屏幕播放状态代码已加入当前源码；可烧录文件见 [NAS 音乐固件包](firmware/amour-k08-4keys-nas-music-idf5.5.4/README.md)。
 
-2026-09-19 已完成实机验证：官方后台调用 `self.music.play` 后，K08 能搜索 NAS、关闭遗留的官方语音通道并播放歌曲。NAS 服务使用 HTTP/1.1 持久连接；更新服务后须重新创建容器，不能只构建镜像。`self.music.search` 可单独检索曲库；最新 NAS 服务会返回总匹配数，K08 会显示“共 N 首，前 5 首”，并将音乐文件的相对目录纳入检索，所以 `周杰伦/七里香/晴天.flac` 可用“周杰伦”或“周杰伦 晴天”找到。转码会清除 FLAC 标签与封面图，避免过大的 Ogg 标签包导致 K08 播放失败；此服务升级会自动重新转码缓存歌曲。播放中短按模式键会立即停止音乐并回到待机；下一次短按会等音乐连接关闭后再进入对话，避免界面停留在“连接中”。语音唤醒打断音乐仍待后续单独验证。
+2026-09-20 已完成实机验证：官方后台调用 `self.music.play` 后，K08 能搜索 NAS、关闭遗留的官方语音通道并播放歌曲。NAS 服务使用 HTTP/1.1 持久连接；更新服务后须重新创建容器，不能只构建镜像。设备端兼容 keep-alive 响应的长度获取：读取到末尾的 TCP 关闭后，只要已收 JSON 可完整解析便继续使用；空响应、过大响应和格式错误仍会明确报错。`self.music.search` 可单独检索曲库；最新 NAS 服务会返回总匹配数，K08 会显示“共 N 首，前 5 首”，并将音乐文件的相对目录纳入检索，所以 `周杰伦/七里香/晴天.flac` 可用“周杰伦”或“周杰伦 晴天”找到。NAS 服务的 `/search` 已支持 `offset`，因此 NAS 音乐播放时长按 `+` 切下一首、长按 `-` 切上一首；它们会在当前点歌关键词的全部匹配中循环。长按判断直接读取应用层媒体状态，不会因 NAS 播放页的异步刷新被误判为待机。电台播放时两个长按仍切换电台，非媒体状态下仍分别为最大音量和静音。转码会清除 FLAC 标签与封面图，避免过大的 Ogg 标签包导致 K08 播放失败；此服务升级会自动重新转码缓存歌曲。播放 NAS 音乐时，K08 会从小智对话区切换到独立播放页，显示缓冲或播放状态、歌曲名、`DS923+ · 本地曲库` 与 `Ogg Opus · 局域网播放`；顶栏仍保留网络、电量和时间。歌名固定显示在标题卡片中，过长时裁切，不做滚动。模式键停止、播放结束、失败或切换到网络电台时会自动回到小智界面。播放中短按模式键会立即停止音乐并回到待机；下一次短按会等音乐连接关闭后再进入对话，避免界面停留在“连接中”。语音唤醒打断音乐仍待后续验证。
+
+## K08 直连网络电台
+
+2026-09-19 第一版已编译并烧录到 K08：设备直接连接电台 HTTP MP3 流并在本机解码、播放，不使用 NAS 或 Docker。第二阶段将目录扩充为 31 个音乐、经典、怀旧、流行、粤语和国际音乐节目，包括清晨音乐台、浙江音乐调频、上海经典947、北京音乐广播、上海动感101、广东音乐之声、深圳飞扬971、Easy FM、中国校园之声和亚洲音乐台。
+
+小智会话中可用的设备端 MCP 工具为 `self.radio.play`（参数 `station`）、`self.radio.search`（参数 `query`）、`self.radio.random`（可选参数 `category`）、`self.radio.next`、`self.radio.previous`、`self.radio.stop` 与 `self.radio.status`。烧录后请结束当前会话，再重新唤醒小智，使后台重新获取工具列表。角色设定可加入：
+
+```text
+用户要求播放、切换、停止或查询网络电台时，优先调用 self.radio.play、
+self.radio.search、self.radio.random、self.radio.next、self.radio.previous、self.radio.stop 或 self.radio.status。
+播放电台时 station 必须使用预置目录中的电台名称；工具返回错误时如实说明。
+用户说“随便放一台”时调用 self.radio.random，category 留空；说“随便放一个粤语、经典、
+怀旧或国际音乐电台”时，category 填对应分类。
+用户要求收藏、取消收藏、查看收藏或播放收藏台时，分别调用 self.radio.favorite_add、
+self.radio.favorite_remove、self.radio.favorite_list、self.radio.favorite_play。收藏保存在 K08，
+重启后仍保留；播放收藏台时 station 可留空。
+用户说“停止电台”“关掉电台”“停止播放”“暂停”或“不要听了”时，必须调用
+self.radio.stop；若选择 self.music.stop，它同样会停止正在播放的网络电台，不能只用文字回复。
+```
+
+首版仅接受直接返回音频数据的明文 HTTP MP3 流；不支持 HTTPS、M3U/M3U8、HLS、AAC、需要跳转的链接或任意 URL。短按模式键、语音唤醒和 `self.radio.stop` 都会停止电台；停止请求的 HTTP 读取超时设为 1 秒。首次实机验证优先说“播放上海动感101”，再测试“下一台”“停止电台”和模式键停止。
+
+播放网络电台时，K08 会覆盖小智对话区并显示独立播放页：直播状态、当前电台名称、节目分类、预置目录序号与收藏状态，以及“上一台 / 下一台 / 模式键停止”的操作提示。顶栏的网络、电量和时间仍可见。播放区按状态、直播标记、标题卡片、分类与序号、操作提示五层排布；电台名经 1.125 倍放大并置于独立卡片，所有预置台名静态居中显示、不循环滚动，次级信息使用较低亮度，避免文字重叠且建立清晰层级。操作提示收为单行，位于分隔线下方，扩大与“预置”信息的间距。连接成功后状态由“正在连接”切换为“正在播放”；“网络直播 · 电台”使用弱化的普通文字色，避免主题绿色过亮。收藏或取消收藏当前电台时，播放页会立即刷新收藏状态。播放或连接电台时，音量加键长按切换下一台，音量减键长按切换上一台；非电台状态下，两个长按仍分别为最大音量和静音，短按始终保持音量加减。短按模式键停止电台。停止、播放失败或切到其他媒体时自动恢复原小智对话界面。直播流没有可靠的曲目、封面或进度信息，因此播放页不显示这些内容。
+
+切台使用播放器代次和播放页会话代次双重校验。连续长按切台时，旧 HTTP 流晚到的停止或失败回调会被忽略，不能结束新电台的播放会话或使界面退回待命。
+
+直播源在已经开始播放后关闭 HTTP 连接时，K08 会显示“正在连接”并自动重连，而不是将其当作歌曲播放结束并退出电台播放页。
+
+2026-09-20 用户完成当前版本初步实机测试：电台连续换台不会退出播放页，模式键停止正常。后续继续进行至少 10 个电台的长时播放、反复切台、Wi-Fi 断线恢复、语音停止/唤醒打断，以及普通对话、NAS 音乐和纳斯达克100 MCP 的回归测试。语音“停止电台”首次没有选择设备工具，已加强 `self.radio.stop` 与兼容的 `self.music.stop` 的工具说明和角色设定提示；重新烧录、结束当前会话后再验证。
+
+## 待命表情
+
+K08 的文字优先对话界面会在有消息时隐藏表情，保证内容区域完整。待命且无消息时，默认显示资源包中的 128×128 彩色 `neutral` 表情；K08 的默认表情资源已从 `noto-color-emoji_64` 切换为 `noto-color-emoji_128`。资源缺失时会回退到原有的 30px 机器人图标。
 
 ## 介绍
 

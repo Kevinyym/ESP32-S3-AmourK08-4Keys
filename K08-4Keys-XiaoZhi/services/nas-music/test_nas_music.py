@@ -24,6 +24,7 @@ class NasMusicTest(unittest.TestCase):
         jay.mkdir(parents=True)
         (jay / "晴天.flac").write_bytes(b"not real flac")
         (self.music / "ignore.cue").write_text("FILE escape.flac", encoding="utf-8")
+        (jay / "七里香.flac").write_bytes(b"not real flac either")
         self.library = Library(self.music, self.cache, "ffmpeg", 5)
         self.library.scan()
 
@@ -32,7 +33,7 @@ class NasMusicTest(unittest.TestCase):
 
     def test_stable_id_and_only_ready_search(self):
         expected = hashlib.sha256("周杰伦/七里香/晴天.flac".encode()).hexdigest()
-        self.assertEqual(self.library.health(), {"status": "ok", "indexed": 1, "ready": 0, "error": 0})
+        self.assertEqual(self.library.health(), {"status": "ok", "indexed": 2, "ready": 0, "error": 0})
         self.assertEqual(self.library.search("晴天", 5), [])
         self.library.cache_path(expected).write_bytes(b"OggS-test")
         self.library.metadata_path(expected).write_text(
@@ -47,15 +48,30 @@ class NasMusicTest(unittest.TestCase):
         self.library.scan()
         self.assertEqual(self.library.search("晴天", 5), [])
 
+    def test_search_offset(self):
+        tracks = list(self.library._tracks.values())
+        for track in tracks:
+            self.library.cache_path(track.id).write_bytes(b"OggS-test")
+            self.library.metadata_path(track.id).write_text(
+                json.dumps(self.library._fingerprint(track)), encoding="utf-8"
+            )
+        self.library.scan()
+        first, total = self.library.search_with_total("周杰伦", 1, 0)
+        second, second_total = self.library.search_with_total("周杰伦", 1, 1)
+        self.assertEqual(total, 2)
+        self.assertEqual(second_total, 2)
+        self.assertNotEqual(first[0]["id"], second[0]["id"])
+        self.assertEqual(self.library.search("周杰伦", 1, 2), [])
+
     def test_symlinks_are_not_indexed(self):
         outside = Path(self.temp.name) / "outside.flac"
         outside.write_bytes(b"x")
         (self.music / "link.flac").symlink_to(outside)
         self.library.scan()
-        self.assertEqual(self.library.health()["indexed"], 1)
+        self.assertEqual(self.library.health()["indexed"], 2)
 
     def test_http_contract(self):
-        track_id = next(iter(self.library._tracks))
+        track_id = next(track.id for track in self.library._tracks.values() if track.title == "晴天")
         payload = b"OggS-audio"
         self.library.cache_path(track_id).write_bytes(payload)
         self.library.metadata_path(track_id).write_text(

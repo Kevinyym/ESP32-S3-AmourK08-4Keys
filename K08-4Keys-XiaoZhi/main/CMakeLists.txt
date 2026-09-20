@@ -3,6 +3,7 @@ set(SOURCES "audio/audio_codec.cc"
             "audio/audio_debugger.cc"
             "audio/audio_service.cc"
             "audio/demuxer/ogg_demuxer.cc"
+            "radio/radio_player.cc"
             "notify/notify_player.cc"
             "audio/codecs/no_audio_codec.cc"
             "audio/codecs/box_audio_codec.cc"
@@ -652,7 +653,7 @@ elseif(CONFIG_BOARD_TYPE_AMOUR_K08_4KEYS)
     set(BOARD_DIR "amour-k08-4keys")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
     set(BUILTIN_ICON_FONT font_material_symbols_16_4)
-    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
 elseif(CONFIG_BOARD_TYPE_DU_CHATX)
     set(BOARD_DIR "du-chatx")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)

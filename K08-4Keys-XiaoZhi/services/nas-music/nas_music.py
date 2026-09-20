@@ -174,13 +174,13 @@ class Library:
                                    t.title.casefold(), t.id))
         return tracks
 
-    def search(self, query: str, limit: int) -> list[dict[str, str]]:
+    def search(self, query: str, limit: int, offset: int = 0) -> list[dict[str, str]]:
         tracks = self._matching_tracks(query)
-        return [{"id": t.id, "title": t.title} for t in tracks[:limit]]
+        return [{"id": t.id, "title": t.title} for t in tracks[offset:offset + limit]]
 
-    def search_with_total(self, query: str, limit: int) -> tuple[list[dict[str, str]], int]:
+    def search_with_total(self, query: str, limit: int, offset: int = 0) -> tuple[list[dict[str, str]], int]:
         tracks = self._matching_tracks(query)
-        return ([{"id": t.id, "title": t.title} for t in tracks[:limit]], len(tracks))
+        return ([{"id": t.id, "title": t.title} for t in tracks[offset:offset + limit]], len(tracks))
 
     def ready_path(self, track_id: str) -> Path | None:
         with self._lock:
@@ -260,13 +260,17 @@ def make_handler(library: Library):
                 query = params.get("q", [""])[0]
                 try:
                     limit = int(params.get("limit", ["5"])[0])
+                    offset = int(params.get("offset", ["0"])[0])
                 except ValueError:
-                    self._json(HTTPStatus.BAD_REQUEST, {"error": "limit must be an integer"})
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "limit and offset must be integers"})
                     return
                 if not 1 <= limit <= 5:
                     self._json(HTTPStatus.BAD_REQUEST, {"error": "limit must be between 1 and 5"})
                     return
-                tracks, total = library.search_with_total(query, limit)
+                if not 0 <= offset <= 1000000:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "offset must be between 0 and 1000000"})
+                    return
+                tracks, total = library.search_with_total(query, limit, offset)
                 self._json(HTTPStatus.OK, {"tracks": tracks, "total": total})
                 return
             match = TRACK_RE.fullmatch(unquote(parsed.path))

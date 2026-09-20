@@ -135,6 +135,10 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    // Queue already-decoded mono PCM from a local media source such as an
+    // internet radio stream. The audio is resampled to the board output rate.
+    bool PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm, int sample_rate,
+                                uint32_t playback_id = 0, uint32_t media_position_ms = 0);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
@@ -152,6 +156,9 @@ private:
     std::mutex input_resampler_mutex_;
     esp_ae_rate_cvt_handle_t input_resampler_ = nullptr;
     esp_ae_rate_cvt_handle_t output_resampler_ = nullptr;
+    std::mutex external_pcm_mutex_;
+    esp_ae_rate_cvt_handle_t external_pcm_resampler_ = nullptr;
+    int external_pcm_sample_rate_ = 0;
     
     // Encoder/Decoder state
     int encoder_sample_rate_ = 16000;

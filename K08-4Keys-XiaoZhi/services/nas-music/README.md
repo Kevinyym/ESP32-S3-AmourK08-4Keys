@@ -34,7 +34,7 @@ Compose 将源目录只读挂载为 `/music:ro`，将转码结果保存到 Docke
 ## API
 
 - `GET /health`：返回 `status`、`indexed`、`ready`、`error`。
-- `GET /search?q=中文&limit=5`：返回 `{"tracks":[{"id":"...","title":"..."}],"total":N}`；limit 为 1–5，`total` 是全部已就绪的匹配数，`tracks` 只保留前 `limit` 首。查询会忽略标题中的连字符、空格等分隔符，并检索文件相对目录；因此 `孙燕姿 我要的幸福` 能匹配 `孙燕姿 - 我要的幸福`，`周杰伦/七里香/晴天.flac` 也能用“周杰伦”或“周杰伦 晴天”找到。
+- `GET /search?q=中文&limit=5&offset=0`：返回 `{"tracks":[{"id":"...","title":"..."}],"total":N}`；limit 为 1–5，offset 默认为 0，`total` 是全部已就绪的匹配数，`tracks` 从 offset 起最多返回 limit 首。K08 用 offset 实现上一首和下一首，超出首尾时循环到另一端。查询会忽略标题中的连字符、空格等分隔符，并检索文件相对目录；因此 `孙燕姿 我要的幸福` 能匹配 `孙燕姿 - 我要的幸福`，`周杰伦/七里香/晴天.flac` 也能用“周杰伦”或“周杰伦 晴天”找到。
 - `GET /tracks/<64位小写十六进制ID>.ogg`：返回已缓存音频。
 
 本地运行测试：

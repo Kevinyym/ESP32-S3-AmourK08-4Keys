@@ -1184,6 +1184,11 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 
 void Application::StopNotification() {
     const bool was_music = music_state_.load() == MusicPlaybackState::kPlaying;
+    const bool was_nas_music = nas_music_active_;
+    if (external_media_active_ && external_media_stop_) {
+        external_media_stop_();
+        external_media_active_ = false;
+    }
     notify_player_.Stop();
     audio_service_.ResetDecoder();
     auto& board = Board::GetInstance();
@@ -1193,7 +1198,12 @@ void Application::StopNotification() {
         SetDeviceState(kDeviceStateIdle);
     }
     if (was_music) {
-        music_state_.store(MusicPlaybackState::kIdle);
+        nas_music_active_ = false;
+        if (was_nas_music) {
+            SetNasMusicPlaybackState(MusicPlaybackState::kIdle);
+        } else {
+            music_state_.store(MusicPlaybackState::kIdle);
+        }
     }
 }
 
@@ -1204,15 +1214,33 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
     const bool was_music = music_state_.load() == MusicPlaybackState::kPlaying;
+    const bool was_nas_music = nas_music_active_;
     StopNotification();
     if (was_music && !success) {
-        music_state_.store(MusicPlaybackState::kFailed);
+        if (was_nas_music) {
+            SetNasMusicPlaybackState(MusicPlaybackState::kFailed);
+        } else {
+            music_state_.store(MusicPlaybackState::kFailed);
+        }
         Board::GetInstance().GetDisplay()->ShowNotification("音乐播放失败");
     }
 }
 
 void Application::RegisterMusicRequestCancelCallback(std::function<void()> callback) {
     music_request_cancel_callback_ = std::move(callback);
+}
+
+void Application::RegisterNasMusicPlaybackCallback(
+    std::function<void(MusicPlaybackState)> callback) {
+    nas_music_playback_callback_ = std::move(callback);
+}
+
+void Application::SetNasMusicPlaybackState(MusicPlaybackState state) {
+    ESP_LOGI(TAG, "NAS music playback state: %d", static_cast<int>(state));
+    music_state_.store(state);
+    if (nas_music_playback_callback_) {
+        nas_music_playback_callback_(state);
+    }
 }
 
 void Application::CancelMusicRequest() {
@@ -1224,7 +1252,17 @@ void Application::CancelMusicRequest() {
         ++music_generation_;
         pending_music_url_.clear();
         pending_music_title_.clear();
-        music_state_.store(MusicPlaybackState::kIdle);
+        // A cancelled radio request must not be able to start later when a
+        // subsequent ordinary music request closes its voice channel.
+        pending_external_media_start_ = nullptr;
+        external_media_stop_ = nullptr;
+        const bool was_nas_music = nas_music_active_;
+        nas_music_active_ = false;
+        if (was_nas_music) {
+            SetNasMusicPlaybackState(MusicPlaybackState::kIdle);
+        } else {
+            music_state_.store(MusicPlaybackState::kIdle);
+        }
     }
 }
 
@@ -1244,7 +1282,8 @@ void Application::PlayMusic(std::string audio_url, std::string title,
 
         pending_music_url_ = std::move(audio_url);
         pending_music_title_ = std::move(title);
-        music_state_.store(MusicPlaybackState::kPending);
+        nas_music_active_ = true;
+        SetNasMusicPlaybackState(MusicPlaybackState::kPending);
         music_close_wait_ticks_ = 0;
         uint32_t generation = ++music_generation_;
 
@@ -1280,7 +1319,77 @@ void Application::TryStartPendingMusic(uint32_t generation) {
         }
         return;
     }
-    StartMusicPlayback(generation);
+    if (pending_external_media_start_) {
+        StartExternalMedia(generation);
+    } else {
+        StartMusicPlayback(generation);
+    }
+}
+
+void Application::PlayExternalMedia(std::string title, std::function<bool()> start,
+                                    std::function<void()> stop) {
+    Schedule([this, title = std::move(title), start = std::move(start), stop = std::move(stop)]() mutable {
+        if (nas_music_active_ && music_state_.load() != MusicPlaybackState::kPlaying) {
+            CancelMusicRequest();
+        }
+        if (GetDeviceState() == kDeviceStateNotifying) {
+            StopNotification();
+        }
+        pending_music_url_.clear();
+        pending_music_title_ = std::move(title);
+        pending_external_media_start_ = std::move(start);
+        external_media_stop_ = std::move(stop);
+        external_media_active_ = false;
+        nas_music_active_ = false;
+        music_state_.store(MusicPlaybackState::kPending);
+        music_close_wait_ticks_ = 0;
+        TryStartPendingMusic(++music_generation_);
+    });
+}
+
+void Application::StartExternalMedia(uint32_t generation) {
+    if (music_state_.load() != MusicPlaybackState::kPending || generation != music_generation_ ||
+        !pending_external_media_start_) {
+        return;
+    }
+    const auto state = GetDeviceState();
+    if (state == kDeviceStateSpeaking || state == kDeviceStateListening || state == kDeviceStateConnecting) {
+        SetDeviceState(kDeviceStateIdle);
+    }
+    if (GetDeviceState() != kDeviceStateIdle) {
+        Board::GetInstance().GetDisplay()->ShowNotification("电台播放失败：设备忙");
+        music_state_.store(MusicPlaybackState::kFailed);
+        pending_external_media_start_ = nullptr;
+        return;
+    }
+    auto start = std::move(pending_external_media_start_);
+    if (!start()) {
+        Board::GetInstance().GetDisplay()->ShowNotification("电台播放启动失败");
+        music_state_.store(MusicPlaybackState::kFailed);
+        return;
+    }
+    external_media_active_ = true;
+    music_state_.store(MusicPlaybackState::kPlaying);
+    SetDeviceState(kDeviceStateNotifying);
+    Board::GetInstance().GetDisplay()->ShowNotification(pending_music_title_.c_str());
+    pending_music_title_.clear();
+}
+
+void Application::FinishExternalMedia(bool success, std::string error) {
+    Schedule([this, success, error = std::move(error)]() {
+        if (!external_media_active_) {
+            return;
+        }
+        external_media_active_ = false;
+        external_media_stop_ = nullptr;
+        music_state_.store(success ? MusicPlaybackState::kIdle : MusicPlaybackState::kFailed);
+        if (GetDeviceState() == kDeviceStateNotifying) {
+            SetDeviceState(kDeviceStateIdle);
+        }
+        if (!success && !error.empty()) {
+            Board::GetInstance().GetDisplay()->ShowNotification(error.c_str());
+        }
+    });
 }
 
 void Application::StartMusicPlayback(uint32_t generation) {
@@ -1302,10 +1411,10 @@ void Application::StartMusicPlayback(uint32_t generation) {
     auto url = pending_music_url_;
     pending_music_title_.clear();
     pending_music_url_.clear();
-    music_state_.store(MusicPlaybackState::kPlaying);
+    SetNasMusicPlaybackState(MusicPlaybackState::kPlaying);
     StartNotification(std::move(url), {{.start_ms = 0, .text = std::move(title)}});
     if (GetDeviceState() != kDeviceStateNotifying) {
-        music_state_.store(MusicPlaybackState::kFailed);
+        SetNasMusicPlaybackState(MusicPlaybackState::kFailed);
         Board::GetInstance().GetDisplay()->ShowNotification("音乐播放失败");
     }
 }
@@ -1314,6 +1423,10 @@ void Application::StopMusic() {
     Schedule([this]() {
         const bool was_playing = music_state_.load() == MusicPlaybackState::kPlaying;
         CancelMusicRequest();
+        if (external_media_active_ && external_media_stop_) {
+            external_media_stop_();
+            external_media_active_ = false;
+        }
         if (was_playing) {
             StopNotification();
         }
